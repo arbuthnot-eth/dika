@@ -566,9 +566,27 @@ impl ProtocolConfig {
                 }
                 4 => {
                     cfg.feature_flags.internal_presign_sessions = true;
-                    // TODO: set internal presign config values (pool minimum sizes,
-                    // consensus round delays, sessions to instantiate) for all
-                    // algorithm variants.
+
+                    // Pool minimum sizes
+                    cfg.internal_eddsa_presign_pool_minimum_size = Some(5000);
+                    cfg.internal_taproot_presign_pool_minimum_size = Some(1000);
+                    cfg.internal_schnorrkel_substrate_presign_pool_minimum_size = Some(1000);
+                    cfg.internal_secp256k1_ecdsa_presign_pool_minimum_size = Some(2500);
+                    cfg.internal_secp256r1_ecdsa_presign_pool_minimum_size = Some(1000);
+
+                    // Consensus round delays (rounds between refill checks)
+                    cfg.internal_eddsa_presign_consensus_round_delay = Some(4); // 1s
+                    cfg.internal_taproot_presign_consensus_round_delay = Some(8); // 2s
+                    cfg.internal_schnorrkel_substrate_presign_consensus_round_delay = Some(8); // 2s
+                    cfg.internal_secp256k1_ecdsa_presign_consensus_round_delay = Some(4); // 1s
+                    cfg.internal_secp256r1_ecdsa_presign_consensus_round_delay = Some(4); // 1s
+
+                    // Sessions to instantiate per refill cycle
+                    cfg.internal_eddsa_presign_sessions_to_instantiate = Some(4); // 4×26=104 presigns
+                    cfg.internal_taproot_presign_sessions_to_instantiate = Some(1); // 1×26=26 presigns
+                    cfg.internal_schnorrkel_substrate_presign_sessions_to_instantiate = Some(1); // 1×26=26
+                    cfg.internal_secp256k1_ecdsa_presign_sessions_to_instantiate = Some(2); // 2×1=2 presigns
+                    cfg.internal_secp256r1_ecdsa_presign_sessions_to_instantiate = Some(1); // 1×1=1 presign
                 }
                 // Use this template when making changes:
                 //
