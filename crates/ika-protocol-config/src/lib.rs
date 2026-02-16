@@ -674,18 +674,6 @@ impl ProtocolConfig {
             }
         }
     }
-
-    pub fn get_checkpoint_presign_pool_minimum_size(&self) -> u64 {
-        self.checkpoint_presign_pool_minimum_size()
-    }
-
-    pub fn get_checkpoint_presign_consensus_round_delay(&self) -> u64 {
-        self.checkpoint_presign_consensus_round_delay()
-    }
-
-    pub fn get_checkpoint_presign_sessions_to_instantiate(&self) -> u64 {
-        self.checkpoint_presign_sessions_to_instantiate()
-    }
 }
 
 // Setters for tests.

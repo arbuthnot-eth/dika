@@ -572,68 +572,69 @@ impl DWalletMPCManager {
         number_of_consensus_rounds: u64,
         network_is_idle: bool,
     ) {
-        let checkpoint_key_id = self.checkpoint_signing_network_encryption_key_id();
-        let checkpoint_curve = self.protocol_config.checkpoint_signing_curve();
-        let checkpoint_algorithm = self.protocol_config.checkpoint_signing_algorithm();
+        if let Some(checkpoint_key_id) = self.checkpoint_signing_network_encryption_key_id() {
+            let checkpoint_curve = self.protocol_config.checkpoint_signing_curve();
+            let checkpoint_algorithm = self.protocol_config.checkpoint_signing_algorithm();
 
-        let all_key_ids: Vec<ObjectID> = self
-            .network_keys
-            .network_encryption_keys
-            .keys()
-            .copied()
-            .collect();
+            let network_key_ids: HashSet<ObjectID> = self
+                .network_keys
+                .network_encryption_keys
+                .keys()
+                .copied()
+                .collect();
 
-        for key_id in all_key_ids {
-            for (curve, signature_algorithms) in Self::get_supported_curve_to_signature_algorithm()
-            {
-                for signature_algorithm in signature_algorithms {
-                    let is_checkpoint_combination = checkpoint_key_id == Some(key_id)
-                        && Some(curve) == checkpoint_curve
-                        && Some(signature_algorithm) == checkpoint_algorithm;
+            for key_id in network_key_ids {
+                for (curve, signature_algorithms) in
+                    Self::get_supported_curve_to_signature_algorithm()
+                {
+                    for signature_algorithm in signature_algorithms {
+                        let is_checkpointing_presign = checkpoint_key_id == key_id
+                            && curve == checkpoint_curve
+                            && signature_algorithm == checkpoint_algorithm;
 
-                    let (minimal_pool_size, consensus_round_delay, sessions_to_instantiate) =
-                        if is_checkpoint_combination {
-                            (
-                                self.protocol_config
-                                    .get_checkpoint_presign_pool_minimum_size(),
-                                self.protocol_config
-                                    .get_checkpoint_presign_consensus_round_delay(),
-                                self.protocol_config
-                                    .get_checkpoint_presign_sessions_to_instantiate(),
-                            )
-                        } else {
-                            (
-                                self.protocol_config.get_internal_presign_pool_minimum_size(
+                        let (minimal_pool_size, consensus_round_delay, sessions_to_instantiate) =
+                            if is_checkpointing_presign {
+                                (
+                                    self.protocol_config.checkpoint_presign_pool_minimum_size(),
+                                    self.protocol_config
+                                        .checkpoint_presign_consensus_round_delay(),
+                                    self.protocol_config
+                                        .checkpoint_presign_sessions_to_instantiate(),
+                                )
+                            } else {
+                                (
+                                    self.protocol_config.get_internal_presign_pool_minimum_size(
+                                        curve,
+                                        signature_algorithm,
+                                    ),
+                                    self.protocol_config
+                                        .get_internal_presign_consensus_round_delay(
+                                            curve,
+                                            signature_algorithm,
+                                        ),
+                                    self.protocol_config
+                                        .get_internal_presign_sessions_to_instantiate(
+                                            curve,
+                                            signature_algorithm,
+                                        ),
+                                )
+                            };
+
+                        let current_pool_size =
+                            self.internal_presign_pool_size(key_id, curve, signature_algorithm);
+
+                        if (number_of_consensus_rounds.is_multiple_of(consensus_round_delay)
+                            && current_pool_size < minimal_pool_size)
+                            || network_is_idle
+                        {
+                            for _ in 1..=sessions_to_instantiate {
+                                self.instantiate_internal_presign_session(
+                                    consensus_round,
+                                    key_id,
                                     curve,
                                     signature_algorithm,
-                                ),
-                                self.protocol_config
-                                    .get_internal_presign_consensus_round_delay(
-                                        curve,
-                                        signature_algorithm,
-                                    ),
-                                self.protocol_config
-                                    .get_internal_presign_sessions_to_instantiate(
-                                        curve,
-                                        signature_algorithm,
-                                    ),
-                            )
-                        };
-
-                    let current_pool_size =
-                        self.internal_presign_pool_size(key_id, curve, signature_algorithm);
-
-                    if (number_of_consensus_rounds.is_multiple_of(consensus_round_delay)
-                        && current_pool_size < minimal_pool_size)
-                        || network_is_idle
-                    {
-                        for _ in 1..=sessions_to_instantiate {
-                            self.instantiate_internal_presign_session(
-                                consensus_round,
-                                key_id,
-                                curve,
-                                signature_algorithm,
-                            );
+                                );
+                            }
                         }
                     }
                 }
