@@ -529,23 +529,23 @@ impl ProtocolConfig {
 
             // === Internal Presign Configuration ===
             // Pool minimum sizes
-            internal_secp256k1_ecdsa_presign_pool_minimum_size: None,
-            internal_secp256r1_ecdsa_presign_pool_minimum_size: None,
-            internal_eddsa_presign_pool_minimum_size: None,
-            internal_schnorrkel_substrate_presign_pool_minimum_size: None,
-            internal_taproot_presign_pool_minimum_size: None,
-            // Consensus round delays
-            internal_secp256k1_ecdsa_presign_consensus_round_delay: None,
-            internal_secp256r1_ecdsa_presign_consensus_round_delay: None,
-            internal_eddsa_presign_consensus_round_delay: None,
-            internal_schnorrkel_substrate_presign_consensus_round_delay: None,
-            internal_taproot_presign_consensus_round_delay: None,
-            // Sessions to instantiate
-            internal_secp256k1_ecdsa_presign_sessions_to_instantiate: None,
-            internal_secp256r1_ecdsa_presign_sessions_to_instantiate: None,
-            internal_eddsa_presign_sessions_to_instantiate: None,
-            internal_schnorrkel_substrate_presign_sessions_to_instantiate: None,
-            internal_taproot_presign_sessions_to_instantiate: None,
+            internal_secp256k1_ecdsa_presign_pool_minimum_size: Some(2500),
+            internal_secp256r1_ecdsa_presign_pool_minimum_size: Some(1000),
+            internal_eddsa_presign_pool_minimum_size: Some(5000),
+            internal_schnorrkel_substrate_presign_pool_minimum_size: Some(1000),
+            internal_taproot_presign_pool_minimum_size: Some(1000),
+            // Consensus round delays (rounds between refill checks)
+            internal_secp256k1_ecdsa_presign_consensus_round_delay: Some(4), // 1s
+            internal_secp256r1_ecdsa_presign_consensus_round_delay: Some(4), // 1s
+            internal_eddsa_presign_consensus_round_delay: Some(4),           // 1s
+            internal_schnorrkel_substrate_presign_consensus_round_delay: Some(8), // 2s
+            internal_taproot_presign_consensus_round_delay: Some(8),         // 2s
+            // Sessions to instantiate per refill cycle
+            internal_secp256k1_ecdsa_presign_sessions_to_instantiate: Some(2), // 2×1=2 presigns
+            internal_secp256r1_ecdsa_presign_sessions_to_instantiate: Some(1), // 1×1=1 presign
+            internal_eddsa_presign_sessions_to_instantiate: Some(4),           // 4×26=104 presigns
+            internal_schnorrkel_substrate_presign_sessions_to_instantiate: Some(1), // 1×26=26
+            internal_taproot_presign_sessions_to_instantiate: Some(1),         // 1×26=26 presigns
         };
 
         cfg.feature_flags.mysticeti_num_leaders_per_round = Some(1);
@@ -566,27 +566,6 @@ impl ProtocolConfig {
                 }
                 4 => {
                     cfg.feature_flags.internal_presign_sessions = true;
-
-                    // Pool minimum sizes
-                    cfg.internal_eddsa_presign_pool_minimum_size = Some(5000);
-                    cfg.internal_taproot_presign_pool_minimum_size = Some(1000);
-                    cfg.internal_schnorrkel_substrate_presign_pool_minimum_size = Some(1000);
-                    cfg.internal_secp256k1_ecdsa_presign_pool_minimum_size = Some(2500);
-                    cfg.internal_secp256r1_ecdsa_presign_pool_minimum_size = Some(1000);
-
-                    // Consensus round delays (rounds between refill checks)
-                    cfg.internal_eddsa_presign_consensus_round_delay = Some(4); // 1s
-                    cfg.internal_taproot_presign_consensus_round_delay = Some(8); // 2s
-                    cfg.internal_schnorrkel_substrate_presign_consensus_round_delay = Some(8); // 2s
-                    cfg.internal_secp256k1_ecdsa_presign_consensus_round_delay = Some(4); // 1s
-                    cfg.internal_secp256r1_ecdsa_presign_consensus_round_delay = Some(4); // 1s
-
-                    // Sessions to instantiate per refill cycle
-                    cfg.internal_eddsa_presign_sessions_to_instantiate = Some(4); // 4×26=104 presigns
-                    cfg.internal_taproot_presign_sessions_to_instantiate = Some(1); // 1×26=26 presigns
-                    cfg.internal_schnorrkel_substrate_presign_sessions_to_instantiate = Some(1); // 1×26=26
-                    cfg.internal_secp256k1_ecdsa_presign_sessions_to_instantiate = Some(2); // 2×1=2 presigns
-                    cfg.internal_secp256r1_ecdsa_presign_sessions_to_instantiate = Some(1); // 1×1=1 presign
                 }
                 // Use this template when making changes:
                 //
