@@ -279,6 +279,10 @@ pub struct ProtocolConfig {
     checkpoint_signing_algorithm: Option<DWalletSignatureAlgorithm>,
     checkpoint_signing_hash_scheme: Option<DWalletHashScheme>,
 
+    checkpoint_presign_pool_minimum_size: Option<u64>,
+    checkpoint_presign_consensus_round_delay: Option<u64>,
+    checkpoint_presign_sessions_to_instantiate: Option<u64>,
+
     // === Internal Presign Configuration ===
     internal_secp256k1_ecdsa_presign_pool_minimum_size: Option<u64>,
     internal_secp256r1_ecdsa_presign_pool_minimum_size: Option<u64>,
@@ -527,23 +531,27 @@ impl ProtocolConfig {
             checkpoint_signing_algorithm: Some(DWalletSignatureAlgorithm::EdDSA),
             checkpoint_signing_hash_scheme: Some(DWalletHashScheme::Keccak256),
 
+            checkpoint_presign_pool_minimum_size: Some(5000),
+            checkpoint_presign_consensus_round_delay: Some(4), // 1s
+            checkpoint_presign_sessions_to_instantiate: Some(4), // 4×26=104 presigns/cycle
+
             // === Internal Presign Configuration ===
             // Pool minimum sizes
             internal_secp256k1_ecdsa_presign_pool_minimum_size: Some(2500),
             internal_secp256r1_ecdsa_presign_pool_minimum_size: Some(1000),
-            internal_eddsa_presign_pool_minimum_size: Some(5000),
+            internal_eddsa_presign_pool_minimum_size: Some(1000),
             internal_schnorrkel_substrate_presign_pool_minimum_size: Some(1000),
             internal_taproot_presign_pool_minimum_size: Some(1000),
             // Consensus round delays (rounds between refill checks)
             internal_secp256k1_ecdsa_presign_consensus_round_delay: Some(4), // 1s
             internal_secp256r1_ecdsa_presign_consensus_round_delay: Some(4), // 1s
-            internal_eddsa_presign_consensus_round_delay: Some(4),           // 1s
+            internal_eddsa_presign_consensus_round_delay: Some(8),           // 2s
             internal_schnorrkel_substrate_presign_consensus_round_delay: Some(8), // 2s
             internal_taproot_presign_consensus_round_delay: Some(8),         // 2s
             // Sessions to instantiate per refill cycle
             internal_secp256k1_ecdsa_presign_sessions_to_instantiate: Some(2), // 2×1=2 presigns
             internal_secp256r1_ecdsa_presign_sessions_to_instantiate: Some(1), // 1×1=1 presign
-            internal_eddsa_presign_sessions_to_instantiate: Some(4),           // 4×26=104 presigns
+            internal_eddsa_presign_sessions_to_instantiate: Some(1),           // 1×26=26 presigns
             internal_schnorrkel_substrate_presign_sessions_to_instantiate: Some(1), // 1×26=26
             internal_taproot_presign_sessions_to_instantiate: Some(1),         // 1×26=26 presigns
         };
@@ -665,6 +673,18 @@ impl ProtocolConfig {
                 self.internal_taproot_presign_sessions_to_instantiate()
             }
         }
+    }
+
+    pub fn get_checkpoint_presign_pool_minimum_size(&self) -> u64 {
+        self.checkpoint_presign_pool_minimum_size()
+    }
+
+    pub fn get_checkpoint_presign_consensus_round_delay(&self) -> u64 {
+        self.checkpoint_presign_consensus_round_delay()
+    }
+
+    pub fn get_checkpoint_presign_sessions_to_instantiate(&self) -> u64 {
+        self.checkpoint_presign_sessions_to_instantiate()
     }
 }
 
@@ -826,7 +846,7 @@ mod test {
     #[test]
     fn test_getters() {
         let prot: ProtocolConfig =
-            ProtocolConfig::get_for_version(ProtocolVersion::new(1), Chain::Unknown);
+            ProtocolConfig::get_for_version(ProtocolVersion::new(3), Chain::Unknown);
         assert_eq!(
             prot.max_messages_per_dwallet_checkpoint(),
             prot.max_messages_per_dwallet_checkpoint_as_option()
@@ -837,7 +857,7 @@ mod test {
     #[test]
     fn test_setters() {
         let mut prot: ProtocolConfig =
-            ProtocolConfig::get_for_version(ProtocolVersion::new(1), Chain::Unknown);
+            ProtocolConfig::get_for_version(ProtocolVersion::new(3), Chain::Unknown);
         prot.set_max_messages_per_dwallet_checkpoint_for_testing(123);
         assert_eq!(prot.max_messages_per_dwallet_checkpoint(), 123);
 
@@ -868,7 +888,7 @@ mod test {
     #[test]
     fn lookup_by_string_test() {
         let prot: ProtocolConfig =
-            ProtocolConfig::get_for_version(ProtocolVersion::new(1), Chain::Unknown);
+            ProtocolConfig::get_for_version(ProtocolVersion::new(3), Chain::Unknown);
         // Does not exist
         assert!(prot.lookup_attr("some random string".to_string()).is_none());
 
@@ -880,9 +900,9 @@ mod test {
         );
 
         let protocol_config: ProtocolConfig =
-            ProtocolConfig::get_for_version(ProtocolVersion::new(1), Chain::Unknown);
+            ProtocolConfig::get_for_version(ProtocolVersion::new(3), Chain::Unknown);
 
-        // We had this in version 1
+        // We had this in version 3
         assert_eq!(
             protocol_config
                 .attr_map()
@@ -895,7 +915,7 @@ mod test {
 
         // Check feature flags
         let prot: ProtocolConfig =
-            ProtocolConfig::get_for_version(ProtocolVersion::new(1), Chain::Unknown);
+            ProtocolConfig::get_for_version(ProtocolVersion::new(3), Chain::Unknown);
         // Does not exist
         assert!(
             prot.feature_flags
