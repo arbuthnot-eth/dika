@@ -529,7 +529,6 @@ impl DWalletMPCManager {
         }
     }
 
-    // TODO: how to do this
     fn get_supported_curve_to_signature_algorithm()
     -> Vec<(DWalletCurve, Vec<DWalletSignatureAlgorithm>)> {
         vec![
