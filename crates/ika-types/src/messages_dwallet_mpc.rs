@@ -125,6 +125,13 @@ pub struct InternalSessionsStatusUpdate {
     pub is_idle: bool,
     /// The global presign requests this validator received.
     pub global_presign_requests: Vec<GlobalPresignRequest>,
+    /// Network encryption key IDs this validator has loaded locally.
+    #[serde(default)]
+    pub network_key_ids: Vec<ObjectID>,
+    /// The checkpoint signing key ID this validator believes should be used.
+    /// `None` if the validator has no network keys loaded.
+    #[serde(default)]
+    pub checkpoint_key_id: Option<ObjectID>,
 }
 
 impl InternalSessionsStatusUpdate {
@@ -133,6 +140,8 @@ impl InternalSessionsStatusUpdate {
         authority: AuthorityName,
         is_idle: bool,
         global_presign_requests: Vec<GlobalPresignRequest>,
+        network_key_ids: Vec<ObjectID>,
+        checkpoint_key_id: Option<ObjectID>,
     ) -> Self {
         use rand::RngCore;
         let mut nonce = [0u8; 32];
@@ -142,6 +151,8 @@ impl InternalSessionsStatusUpdate {
             nonce,
             is_idle,
             global_presign_requests,
+            network_key_ids,
+            checkpoint_key_id,
         }
     }
 }

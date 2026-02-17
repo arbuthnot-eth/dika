@@ -49,6 +49,10 @@ pub struct AgreedStatusUpdate {
     pub is_idle: bool,
     /// The presign session requests that reached quorum agreement.
     pub global_presign_requests: Vec<GlobalPresignRequest>,
+    /// Network key IDs that reached quorum agreement.
+    pub agreed_network_key_ids: HashSet<ObjectID>,
+    /// Checkpoint key ID that reached majority vote agreement.
+    pub agreed_checkpoint_key_id: Option<ObjectID>,
 }
 
 /// The [`DWalletMPCManager`] manages MPC sessions:
@@ -118,6 +122,18 @@ pub(crate) struct DWalletMPCManager {
     /// When we receive our own status update back from consensus, we mark those requests as sent.
     /// This prevents sending the same request multiple times.
     sent_presign_requests: HashSet<SessionIdentifier>,
+
+    /// Per-key voting: which parties report having each network key.
+    network_key_votes_by_key_id: HashMap<ObjectID, HashSet<PartyID>>,
+
+    /// Per-party checkpoint key vote.
+    checkpoint_key_id_by_party: HashMap<PartyID, Option<ObjectID>>,
+
+    /// Most recently consensus-agreed network key IDs.
+    agreed_network_key_ids: HashSet<ObjectID>,
+
+    /// Most recently consensus-agreed checkpoint key ID.
+    agreed_checkpoint_key_id: Option<ObjectID>,
 
     // The sequence number of the next internal presign session.
     // Starts from 1 in every epoch, and increases as they are spawned.
@@ -222,6 +238,10 @@ impl DWalletMPCManager {
             completed_presign_session_identifiers: HashSet::new(),
             global_presign_requests: Vec::new(),
             sent_presign_requests: HashSet::new(),
+            network_key_votes_by_key_id: HashMap::new(),
+            checkpoint_key_id_by_party: HashMap::new(),
+            agreed_network_key_ids: HashSet::new(),
+            agreed_checkpoint_key_id: None,
             next_internal_presign_sequence_number: 1,
             epoch_store,
         })
@@ -365,14 +385,42 @@ impl DWalletMPCManager {
                     );
                 }
             }
+
+            // Vote on network key IDs.
+            for key_id in &status_update.network_key_ids {
+                self.network_key_votes_by_key_id
+                    .entry(*key_id)
+                    .or_default()
+                    .insert(sender_party_id);
+            }
+
+            // Vote on checkpoint key ID.
+            self.checkpoint_key_id_by_party
+                .insert(sender_party_id, status_update.checkpoint_key_id);
         }
 
         // Perform majority vote on idle status at the end of processing.
         let network_is_idle = self.compute_idle_status_majority_vote();
 
+        // Keys that reached quorum (is_authorized_subset).
+        let agreed_network_key_ids: HashSet<ObjectID> = self
+            .network_key_votes_by_key_id
+            .iter()
+            .filter(|(_, parties)| self.access_structure.is_authorized_subset(parties).is_ok())
+            .map(|(key_id, _)| *key_id)
+            .collect();
+
+        // Checkpoint key via weighted majority vote.
+        let agreed_checkpoint_key_id = self.compute_checkpoint_key_id_majority_vote();
+
+        self.agreed_network_key_ids = agreed_network_key_ids.clone();
+        self.agreed_checkpoint_key_id = agreed_checkpoint_key_id;
+
         Some(AgreedStatusUpdate {
             is_idle: network_is_idle,
             global_presign_requests: agreed_presign_requests,
+            agreed_network_key_ids,
+            agreed_checkpoint_key_id,
         })
     }
 
@@ -395,6 +443,29 @@ impl DWalletMPCManager {
                     "Failed to compute idle status majority vote"
                 );
                 false
+            }
+        }
+    }
+
+    /// Compute majority vote for checkpoint key ID using the accumulated `checkpoint_key_id_by_party`.
+    fn compute_checkpoint_key_id_majority_vote(&self) -> Option<ObjectID> {
+        if self.checkpoint_key_id_by_party.is_empty() {
+            return None;
+        }
+
+        match self
+            .checkpoint_key_id_by_party
+            .clone()
+            .weighted_majority_vote(&self.access_structure)
+        {
+            Ok((_, majority_vote)) => majority_vote,
+            Err(mpc::Error::ThresholdNotReached) => None,
+            Err(e) => {
+                error!(
+                    error = %e,
+                    "Failed to compute checkpoint key ID majority vote"
+                );
+                None
             }
         }
     }
@@ -555,7 +626,8 @@ impl DWalletMPCManager {
     }
 
     /// Returns the network encryption key ID used for checkpoint signing (the oldest by DKG epoch).
-    fn checkpoint_signing_network_encryption_key_id(&self) -> Option<ObjectID> {
+    /// Used for populating status updates with this validator's local checkpoint key vote.
+    pub(crate) fn checkpoint_signing_network_encryption_key_id(&self) -> Option<ObjectID> {
         self.network_keys
             .network_encryption_keys
             .iter()
@@ -563,77 +635,97 @@ impl DWalletMPCManager {
             .map(|(id, _)| *id)
     }
 
-    /// Instantiates internal presign sessions based on predefined logic that is
-    /// synced with the consensus and thus with the other validators.
+    /// Returns the network encryption key IDs this validator has loaded locally.
+    pub(crate) fn local_network_key_ids(&self) -> Vec<ObjectID> {
+        self.network_keys
+            .network_encryption_keys
+            .keys()
+            .copied()
+            .collect()
+    }
+
+    /// Returns `true` if this validator has all consensus-agreed network keys loaded locally.
+    pub(crate) fn has_all_agreed_network_keys(&self) -> bool {
+        self.agreed_network_key_ids.iter().all(|key_id| {
+            self.network_keys
+                .network_encryption_keys
+                .contains_key(key_id)
+        })
+    }
+
+    /// Instantiates internal presign sessions based on consensus-agreed network key IDs.
+    /// Uses only keys that have reached quorum agreement via status update voting.
     pub(super) fn instantiate_internal_presign_sessions(
         &mut self,
         consensus_round: u64,
         number_of_consensus_rounds: u64,
         network_is_idle: bool,
     ) {
-        if let Some(checkpoint_key_id) = self.checkpoint_signing_network_encryption_key_id() {
-            let checkpoint_curve = self.protocol_config.checkpoint_signing_curve();
-            let checkpoint_algorithm = self.protocol_config.checkpoint_signing_algorithm();
+        let agreed_checkpoint_key_id = match self.agreed_checkpoint_key_id {
+            Some(id) => id,
+            None => return,
+        };
 
-            let network_key_ids: HashSet<ObjectID> = self
-                .network_keys
-                .network_encryption_keys
-                .keys()
-                .copied()
-                .collect();
+        if self.agreed_network_key_ids.is_empty() {
+            return;
+        }
 
-            for key_id in network_key_ids {
-                for (curve, signature_algorithms) in
-                    Self::get_supported_curve_to_signature_algorithm()
-                {
-                    for signature_algorithm in signature_algorithms {
-                        let is_checkpointing_presign = checkpoint_key_id == key_id
-                            && curve == checkpoint_curve
-                            && signature_algorithm == checkpoint_algorithm;
+        let checkpoint_curve = self.protocol_config.checkpoint_signing_curve();
+        let checkpoint_algorithm = self.protocol_config.checkpoint_signing_algorithm();
 
-                        let (minimal_pool_size, consensus_round_delay, sessions_to_instantiate) =
-                            if is_checkpointing_presign {
-                                (
-                                    self.protocol_config.checkpoint_presign_pool_minimum_size(),
-                                    self.protocol_config
-                                        .checkpoint_presign_consensus_round_delay(),
-                                    self.protocol_config
-                                        .checkpoint_presign_sessions_to_instantiate(),
-                                )
-                            } else {
-                                (
-                                    self.protocol_config.get_internal_presign_pool_minimum_size(
+        // Clone the agreed key IDs to avoid borrow conflicts.
+        let agreed_key_ids: Vec<ObjectID> = self.agreed_network_key_ids.iter().copied().collect();
+
+        for key_id in agreed_key_ids {
+            for (curve, signature_algorithms) in Self::get_supported_curve_to_signature_algorithm()
+            {
+                for signature_algorithm in signature_algorithms {
+                    let is_checkpointing_presign = agreed_checkpoint_key_id == key_id
+                        && curve == checkpoint_curve
+                        && signature_algorithm == checkpoint_algorithm;
+
+                    let (minimal_pool_size, consensus_round_delay, sessions_to_instantiate) =
+                        if is_checkpointing_presign {
+                            (
+                                self.protocol_config.checkpoint_presign_pool_minimum_size(),
+                                self.protocol_config
+                                    .checkpoint_presign_consensus_round_delay(),
+                                self.protocol_config
+                                    .checkpoint_presign_sessions_to_instantiate(),
+                            )
+                        } else {
+                            (
+                                self.protocol_config.get_internal_presign_pool_minimum_size(
+                                    curve,
+                                    signature_algorithm,
+                                ),
+                                self.protocol_config
+                                    .get_internal_presign_consensus_round_delay(
                                         curve,
                                         signature_algorithm,
                                     ),
-                                    self.protocol_config
-                                        .get_internal_presign_consensus_round_delay(
-                                            curve,
-                                            signature_algorithm,
-                                        ),
-                                    self.protocol_config
-                                        .get_internal_presign_sessions_to_instantiate(
-                                            curve,
-                                            signature_algorithm,
-                                        ),
-                                )
-                            };
+                                self.protocol_config
+                                    .get_internal_presign_sessions_to_instantiate(
+                                        curve,
+                                        signature_algorithm,
+                                    ),
+                            )
+                        };
 
-                        let current_pool_size =
-                            self.internal_presign_pool_size(key_id, curve, signature_algorithm);
+                    let current_pool_size =
+                        self.internal_presign_pool_size(key_id, curve, signature_algorithm);
 
-                        if (number_of_consensus_rounds.is_multiple_of(consensus_round_delay)
-                            && current_pool_size < minimal_pool_size)
-                            || network_is_idle
-                        {
-                            for _ in 1..=sessions_to_instantiate {
-                                self.instantiate_internal_presign_session(
-                                    consensus_round,
-                                    key_id,
-                                    curve,
-                                    signature_algorithm,
-                                );
-                            }
+                    if (number_of_consensus_rounds.is_multiple_of(consensus_round_delay)
+                        && current_pool_size < minimal_pool_size)
+                        || network_is_idle
+                    {
+                        for _ in 1..=sessions_to_instantiate {
+                            self.instantiate_internal_presign_session(
+                                consensus_round,
+                                key_id,
+                                curve,
+                                signature_algorithm,
+                            );
                         }
                     }
                 }
@@ -713,18 +805,17 @@ impl DWalletMPCManager {
         checkpoint_sequence_number: u64,
         checkpoint_message: Vec<u8>,
     ) -> bool {
-        // Get the network encryption key ID (same as internal presign sessions)
-        let dwallet_network_encryption_key_id =
-            match self.checkpoint_signing_network_encryption_key_id() {
-                Some(key_id) => key_id,
-                None => {
-                    warn!(
-                        checkpoint_sequence_number,
-                        "No network encryption key available for internal checkpoint signing"
-                    );
-                    return false;
-                }
-            };
+        // Use the consensus-agreed checkpoint key ID.
+        let dwallet_network_encryption_key_id = match self.agreed_checkpoint_key_id {
+            Some(key_id) => key_id,
+            None => {
+                warn!(
+                    checkpoint_sequence_number,
+                    "No consensus-agreed checkpoint key available for internal checkpoint signing"
+                );
+                return false;
+            }
+        };
 
         // Get the checkpoint signing algorithm and curve from protocol config
         let signature_algorithm = self.protocol_config.checkpoint_signing_algorithm();
