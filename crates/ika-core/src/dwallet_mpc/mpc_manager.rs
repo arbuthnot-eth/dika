@@ -49,9 +49,9 @@ pub struct AgreedStatusUpdate {
     pub is_idle: bool,
     /// The presign session requests that reached quorum agreement.
     pub global_presign_requests: Vec<GlobalPresignRequest>,
-    /// Network key IDs that reached quorum agreement.
-    pub agreed_network_key_ids: HashSet<ObjectID>,
-    /// Checkpoint key ID that reached majority vote agreement.
+    /// Network key data that reached quorum agreement via weighted majority vote.
+    pub agreed_network_key_data: HashMap<ObjectID, DWalletNetworkEncryptionKeyData>,
+    /// Checkpoint key ID deterministically computed as the agreed key with the lowest `dkg_at_epoch`.
     pub agreed_checkpoint_key_id: Option<ObjectID>,
 }
 
@@ -123,16 +123,14 @@ pub(crate) struct DWalletMPCManager {
     /// This prevents sending the same request multiple times.
     sent_presign_requests: HashSet<SessionIdentifier>,
 
-    /// Per-key voting: which parties report having each network key.
-    network_key_votes_by_key_id: HashMap<ObjectID, HashSet<PartyID>>,
+    /// Per-key voting: which parties report what data for each network key.
+    network_key_data_votes: HashMap<ObjectID, HashMap<PartyID, DWalletNetworkEncryptionKeyData>>,
 
-    /// Per-party checkpoint key vote.
-    checkpoint_key_id_by_party: HashMap<PartyID, ObjectID>,
+    /// Most recently consensus-agreed network key data (via weighted majority vote on the data itself).
+    agreed_network_key_data: HashMap<ObjectID, DWalletNetworkEncryptionKeyData>,
 
-    /// Most recently consensus-agreed network key IDs.
-    agreed_network_key_ids: HashSet<ObjectID>,
-
-    /// Most recently consensus-agreed checkpoint key ID.
+    /// Most recently consensus-agreed checkpoint key ID
+    /// (deterministically computed as the agreed key with the lowest `dkg_at_epoch`).
     agreed_checkpoint_key_id: Option<ObjectID>,
 
     // The sequence number of the next internal presign session.
@@ -238,9 +236,8 @@ impl DWalletMPCManager {
             completed_presign_session_identifiers: HashSet::new(),
             global_presign_requests: Vec::new(),
             sent_presign_requests: HashSet::new(),
-            network_key_votes_by_key_id: HashMap::new(),
-            checkpoint_key_id_by_party: HashMap::new(),
-            agreed_network_key_ids: HashSet::new(),
+            network_key_data_votes: HashMap::new(),
+            agreed_network_key_data: HashMap::new(),
             agreed_checkpoint_key_id: None,
             next_internal_presign_sequence_number: 1,
             epoch_store,
@@ -386,42 +383,46 @@ impl DWalletMPCManager {
                 }
             }
 
-            // Vote on network key IDs.
-            for key_id in &status_update.network_key_ids {
-                self.network_key_votes_by_key_id
-                    .entry(*key_id)
+            // Vote on network key data.
+            for key_data in &status_update.network_key_data {
+                self.network_key_data_votes
+                    .entry(key_data.id)
                     .or_default()
-                    .insert(sender_party_id);
-            }
-
-            // Vote on checkpoint key ID only when the validator has network keys.
-            if !status_update.network_key_ids.is_empty() {
-                self.checkpoint_key_id_by_party
-                    .insert(sender_party_id, status_update.checkpoint_key_id);
+                    .insert(sender_party_id, key_data.clone());
             }
         }
 
         // Perform majority vote on idle status at the end of processing.
         let network_is_idle = self.compute_idle_status_majority_vote();
 
-        // Keys that reached quorum (is_authorized_subset).
-        let agreed_network_key_ids: HashSet<ObjectID> = self
-            .network_key_votes_by_key_id
+        // Weighted majority vote on the key data itself (per key ID).
+        let agreed_network_key_data: HashMap<ObjectID, DWalletNetworkEncryptionKeyData> = self
+            .network_key_data_votes
             .iter()
-            .filter(|(_, parties)| self.access_structure.is_authorized_subset(parties).is_ok())
-            .map(|(key_id, _)| *key_id)
+            .filter_map(|(key_id, party_votes)| {
+                match party_votes
+                    .clone()
+                    .weighted_majority_vote(&self.access_structure)
+                {
+                    Ok((_, agreed_data)) => Some((*key_id, agreed_data)),
+                    Err(_) => None,
+                }
+            })
             .collect();
 
-        // Checkpoint key via weighted majority vote.
-        let agreed_checkpoint_key_id = self.compute_checkpoint_key_id_majority_vote();
+        // Checkpoint key deterministically: agreed key with lowest dkg_at_epoch.
+        let agreed_checkpoint_key_id = agreed_network_key_data
+            .values()
+            .min_by_key(|data| data.dkg_at_epoch)
+            .map(|data| data.id);
 
-        self.agreed_network_key_ids = agreed_network_key_ids.clone();
+        self.agreed_network_key_data = agreed_network_key_data.clone();
         self.agreed_checkpoint_key_id = agreed_checkpoint_key_id;
 
         Some(AgreedStatusUpdate {
             is_idle: network_is_idle,
             global_presign_requests: agreed_presign_requests,
-            agreed_network_key_ids,
+            agreed_network_key_data,
             agreed_checkpoint_key_id,
         })
     }
@@ -445,29 +446,6 @@ impl DWalletMPCManager {
                     "Failed to compute idle status majority vote"
                 );
                 false
-            }
-        }
-    }
-
-    /// Compute majority vote for checkpoint key ID using the accumulated `checkpoint_key_id_by_party`.
-    fn compute_checkpoint_key_id_majority_vote(&self) -> Option<ObjectID> {
-        if self.checkpoint_key_id_by_party.is_empty() {
-            return None;
-        }
-
-        match self
-            .checkpoint_key_id_by_party
-            .clone()
-            .weighted_majority_vote(&self.access_structure)
-        {
-            Ok((_, majority_vote)) => Some(majority_vote),
-            Err(mpc::Error::ThresholdNotReached) => None,
-            Err(e) => {
-                error!(
-                    error = %e,
-                    "Failed to compute checkpoint key ID majority vote"
-                );
-                None
             }
         }
     }
@@ -627,37 +605,6 @@ impl DWalletMPCManager {
         ]
     }
 
-    /// Returns the network encryption key IDs this validator has loaded locally,
-    /// along with the checkpoint key vote (oldest key by DKG epoch, or `ObjectID::ZERO`
-    /// when the validator has no network keys).
-    pub(crate) fn local_network_key_voting_data(&self) -> (Vec<ObjectID>, ObjectID) {
-        let key_ids: Vec<ObjectID> = self
-            .network_keys
-            .network_encryption_keys
-            .keys()
-            .copied()
-            .collect();
-
-        let checkpoint_key_id = self
-            .network_keys
-            .network_encryption_keys
-            .iter()
-            .min_by(|(_, a), (_, b)| a.dkg_at_epoch.cmp(&b.dkg_at_epoch))
-            .map(|(id, _)| *id)
-            .unwrap_or(ObjectID::ZERO);
-
-        (key_ids, checkpoint_key_id)
-    }
-
-    /// Returns `true` if this validator has all consensus-agreed network keys loaded locally.
-    pub(crate) fn has_all_agreed_network_keys(&self) -> bool {
-        self.agreed_network_key_ids.iter().all(|key_id| {
-            self.network_keys
-                .network_encryption_keys
-                .contains_key(key_id)
-        })
-    }
-
     /// Instantiates internal presign sessions based on consensus-agreed network key IDs.
     /// Uses only keys that have reached quorum agreement via status update voting.
     pub(super) fn instantiate_internal_presign_sessions(
@@ -671,7 +618,7 @@ impl DWalletMPCManager {
             None => return,
         };
 
-        if self.agreed_network_key_ids.is_empty() {
+        if self.agreed_network_key_data.is_empty() {
             return;
         }
 
@@ -679,7 +626,7 @@ impl DWalletMPCManager {
         let checkpoint_algorithm = self.protocol_config.checkpoint_signing_algorithm();
 
         // Clone the agreed key IDs to avoid borrow conflicts.
-        let agreed_key_ids: Vec<ObjectID> = self.agreed_network_key_ids.iter().copied().collect();
+        let agreed_key_ids: Vec<ObjectID> = self.agreed_network_key_data.keys().copied().collect();
 
         for key_id in agreed_key_ids {
             for (curve, signature_algorithms) in Self::get_supported_curve_to_signature_algorithm()
@@ -1273,6 +1220,67 @@ impl DWalletMPCManager {
             .iter()
             .map(|(&key_id, key_data)| (key_id, key_data.clone()))
             .collect()
+    }
+
+    /// Instantiates agreed network keys from consensus-voted data.
+    /// For each key in `agreed_network_key_data` that is not yet loaded locally,
+    /// instantiates the key from the voted data (same logic as `maybe_update_network_keys`
+    /// but sourced from consensus-voted data instead of the Sui watch channel).
+    pub(crate) async fn instantiate_agreed_keys_from_voted_data(&mut self) {
+        let keys_to_instantiate: Vec<(ObjectID, DWalletNetworkEncryptionKeyData)> = self
+            .agreed_network_key_data
+            .iter()
+            .filter(|(key_id, _)| {
+                !self
+                    .network_keys
+                    .network_encryption_keys
+                    .contains_key(key_id)
+            })
+            .map(|(key_id, key_data)| (*key_id, key_data.clone()))
+            .collect();
+
+        for (key_id, key_data) in keys_to_instantiate {
+            info!(key_id=?key_id, "Instantiating agreed network key from consensus-voted data");
+
+            let res =
+                instantiate_dwallet_mpc_network_encryption_key_public_data_from_public_output(
+                    key_data.current_epoch,
+                    self.access_structure.clone(),
+                    key_data,
+                    self.protocol_config.checkpoint_signing_curve(),
+                    self.protocol_config.checkpoint_signing_algorithm(),
+                    self.party_id,
+                )
+                .await;
+
+            match res {
+                Ok(key) => {
+                    if key.epoch() != self.epoch_id {
+                        info!(
+                            key_id=?key_id,
+                            epoch=?key.epoch(),
+                            "Consensus-voted network key epoch does not match current epoch, ignoring"
+                        );
+                        continue;
+                    }
+                    info!(key_id=?key_id, "Updating network key from consensus-voted data");
+                    if let Err(e) = self
+                        .network_keys
+                        .update_network_key(key_id, &key, &self.access_structure)
+                        .await
+                    {
+                        error!(error=?e, key_id=?key_id, "Failed to update network key from consensus-voted data");
+                    }
+                }
+                Err(err) => {
+                    error!(
+                        error=?err,
+                        key_id=?key_id,
+                        "Failed to instantiate network key from consensus-voted data"
+                    );
+                }
+            }
+        }
     }
 
     pub(crate) fn handle_output(

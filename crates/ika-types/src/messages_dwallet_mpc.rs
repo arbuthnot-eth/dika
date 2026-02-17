@@ -125,11 +125,8 @@ pub struct InternalSessionsStatusUpdate {
     pub is_idle: bool,
     /// The global presign requests this validator received.
     pub global_presign_requests: Vec<GlobalPresignRequest>,
-    /// Network encryption key IDs this validator has loaded locally.
-    pub network_key_ids: Vec<ObjectID>,
-    /// The checkpoint signing key ID this validator believes should be used.
-    /// `ObjectID::ZERO` when the validator has no network keys loaded.
-    pub checkpoint_key_id: ObjectID,
+    /// Network encryption key data this validator has loaded from Sui.
+    pub network_key_data: Vec<DWalletNetworkEncryptionKeyData>,
 }
 
 impl InternalSessionsStatusUpdate {
@@ -138,8 +135,7 @@ impl InternalSessionsStatusUpdate {
         authority: AuthorityName,
         is_idle: bool,
         global_presign_requests: Vec<GlobalPresignRequest>,
-        network_key_ids: Vec<ObjectID>,
-        checkpoint_key_id: ObjectID,
+        network_key_data: Vec<DWalletNetworkEncryptionKeyData>,
     ) -> Self {
         use rand::RngCore;
         let mut nonce = [0u8; 32];
@@ -149,8 +145,7 @@ impl InternalSessionsStatusUpdate {
             nonce,
             is_idle,
             global_presign_requests,
-            network_key_ids,
-            checkpoint_key_id,
+            network_key_data,
         }
     }
 }
@@ -1004,7 +999,7 @@ pub struct DWalletNetworkEncryptionKey {
     pub state: DWalletNetworkEncryptionKeyState,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DWalletNetworkEncryptionKeyData {
     pub id: ObjectID,
     pub current_epoch: u64,
@@ -1015,7 +1010,7 @@ pub struct DWalletNetworkEncryptionKeyData {
 }
 
 /// Represents the Rust version of the Move enum `ika_system::dwallet_2pc_mpc_coordinator_inner::DWalletNetworkEncryptionKeyState`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DWalletNetworkEncryptionKeyState {
     AwaitingNetworkDKG,
     NetworkDKGCompleted,

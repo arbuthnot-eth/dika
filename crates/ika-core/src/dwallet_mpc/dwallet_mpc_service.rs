@@ -51,7 +51,7 @@ use itertools::Itertools;
 use mpc::GuaranteedOutputDeliveryRoundResult;
 #[cfg(feature = "test-utils")]
 use prometheus::Registry;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use sui_types::base_types::ObjectID;
@@ -88,8 +88,8 @@ pub struct DWalletMPCService {
     /// Is the network considered in an idle state?
     /// If so, we can process more internal presign sessions to make use of resources.
     network_is_idle: bool,
-    /// Tracks the last sent network key IDs to avoid sending duplicate updates.
-    last_sent_network_key_ids: Option<Vec<ObjectID>>,
+    /// Tracks which network key IDs have already been sent through consensus.
+    sent_network_key_ids: HashSet<ObjectID>,
 }
 
 impl DWalletMPCService {
@@ -155,7 +155,7 @@ impl DWalletMPCService {
             last_sent_idle_status: None,
             number_of_consensus_rounds: 0,
             network_is_idle: false,
-            last_sent_network_key_ids: None,
+            sent_network_key_ids: HashSet::new(),
         }
     }
 
@@ -201,7 +201,7 @@ impl DWalletMPCService {
             last_sent_idle_status: None,
             number_of_consensus_rounds: 0,
             network_is_idle: false,
-            last_sent_network_key_ids: None,
+            sent_network_key_ids: HashSet::new(),
         }
     }
 
@@ -321,7 +321,7 @@ impl DWalletMPCService {
     }
 
     /// Send status update to consensus if there are unsent presign requests,
-    /// idle status changed, or network key IDs changed.
+    /// idle status changed, or there is new network key data to send.
     async fn send_status_update_to_consensus(&mut self, is_idle: bool) {
         let Some(consensus_round) = self.last_read_consensus_round else {
             return;
@@ -330,16 +330,21 @@ impl DWalletMPCService {
         // Only include presign requests that haven't been sent yet.
         let unsent_presign_requests = self.dwallet_mpc_manager.get_unsent_presign_requests();
 
-        // Collect local network key info for the status update.
-        let (network_key_ids, checkpoint_key_id) =
-            self.dwallet_mpc_manager.local_network_key_voting_data();
+        // Read raw key data from the Sui watch channel and filter to keys not yet sent.
+        let all_key_data = self.sui_data_requests.network_keys_receiver.borrow();
+        let new_key_data: Vec<_> = all_key_data
+            .values()
+            .filter(|data| !self.sent_network_key_ids.contains(&data.id))
+            .cloned()
+            .collect();
+        drop(all_key_data);
 
         // Check if there's anything new to send.
         let has_unsent_requests = !unsent_presign_requests.is_empty();
         let idle_status_changed = self.last_sent_idle_status != Some(is_idle);
-        let key_ids_changed = self.last_sent_network_key_ids.as_ref() != Some(&network_key_ids);
+        let has_new_key_data = !new_key_data.is_empty();
 
-        if !has_unsent_requests && !idle_status_changed && !key_ids_changed {
+        if !has_unsent_requests && !idle_status_changed && !has_new_key_data {
             return;
         }
 
@@ -347,8 +352,7 @@ impl DWalletMPCService {
             self.name,
             is_idle,
             unsent_presign_requests,
-            network_key_ids.clone(),
-            checkpoint_key_id,
+            new_key_data.clone(),
         );
 
         let consensus_tx = ConsensusTransaction::new_internal_sessions_status_update(status_update);
@@ -366,7 +370,9 @@ impl DWalletMPCService {
         } else {
             // Update last sent values.
             self.last_sent_idle_status = Some(is_idle);
-            self.last_sent_network_key_ids = Some(network_key_ids);
+            for key_data in &new_key_data {
+                self.sent_network_key_ids.insert(key_data.id);
+            }
         }
     }
 
@@ -601,17 +607,10 @@ impl DWalletMPCService {
                 }
             }
 
-            // 2. BLOCK: busy-wait until we have all agreed keys locally.
-            //    Keys arrive from Sui via a watch channel; polling maybe_update_network_keys()
-            //    checks the channel and processes new keys.
-            while !self.dwallet_mpc_manager.has_all_agreed_network_keys() {
-                warn!(
-                    consensus_round,
-                    "Waiting for consensus-agreed network keys to arrive locally"
-                );
-                self.dwallet_mpc_manager.maybe_update_network_keys().await;
-                tokio::time::sleep(Duration::from_millis(READ_INTERVAL_MS)).await;
-            }
+            // 2. Instantiate any agreed keys we don't have yet, from consensus-voted data.
+            self.dwallet_mpc_manager
+                .instantiate_agreed_keys_from_voted_data()
+                .await;
 
             // 3. Instantiate internal presign sessions (now uses agreed values).
             if self.protocol_config.internal_presign_sessions_enabled() {
