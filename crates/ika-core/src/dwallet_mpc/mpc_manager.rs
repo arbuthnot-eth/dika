@@ -127,7 +127,7 @@ pub(crate) struct DWalletMPCManager {
     network_key_votes_by_key_id: HashMap<ObjectID, HashSet<PartyID>>,
 
     /// Per-party checkpoint key vote.
-    checkpoint_key_id_by_party: HashMap<PartyID, Option<ObjectID>>,
+    checkpoint_key_id_by_party: HashMap<PartyID, ObjectID>,
 
     /// Most recently consensus-agreed network key IDs.
     agreed_network_key_ids: HashSet<ObjectID>,
@@ -394,9 +394,11 @@ impl DWalletMPCManager {
                     .insert(sender_party_id);
             }
 
-            // Vote on checkpoint key ID.
-            self.checkpoint_key_id_by_party
-                .insert(sender_party_id, status_update.checkpoint_key_id);
+            // Vote on checkpoint key ID only when the validator has network keys.
+            if !status_update.network_key_ids.is_empty() {
+                self.checkpoint_key_id_by_party
+                    .insert(sender_party_id, status_update.checkpoint_key_id);
+            }
         }
 
         // Perform majority vote on idle status at the end of processing.
@@ -458,7 +460,7 @@ impl DWalletMPCManager {
             .clone()
             .weighted_majority_vote(&self.access_structure)
         {
-            Ok((_, majority_vote)) => majority_vote,
+            Ok((_, majority_vote)) => Some(majority_vote),
             Err(mpc::Error::ThresholdNotReached) => None,
             Err(e) => {
                 error!(
@@ -625,23 +627,26 @@ impl DWalletMPCManager {
         ]
     }
 
-    /// Returns the network encryption key ID used for checkpoint signing (the oldest by DKG epoch).
-    /// Used for populating status updates with this validator's local checkpoint key vote.
-    pub(crate) fn checkpoint_signing_network_encryption_key_id(&self) -> Option<ObjectID> {
-        self.network_keys
+    /// Returns the network encryption key IDs this validator has loaded locally,
+    /// along with the checkpoint key vote (oldest key by DKG epoch, or `ObjectID::ZERO`
+    /// when the validator has no network keys).
+    pub(crate) fn local_network_key_voting_data(&self) -> (Vec<ObjectID>, ObjectID) {
+        let key_ids: Vec<ObjectID> = self
+            .network_keys
+            .network_encryption_keys
+            .keys()
+            .copied()
+            .collect();
+
+        let checkpoint_key_id = self
+            .network_keys
             .network_encryption_keys
             .iter()
             .min_by(|(_, a), (_, b)| a.dkg_at_epoch.cmp(&b.dkg_at_epoch))
             .map(|(id, _)| *id)
-    }
+            .unwrap_or(ObjectID::ZERO);
 
-    /// Returns the network encryption key IDs this validator has loaded locally.
-    pub(crate) fn local_network_key_ids(&self) -> Vec<ObjectID> {
-        self.network_keys
-            .network_encryption_keys
-            .keys()
-            .copied()
-            .collect()
+        (key_ids, checkpoint_key_id)
     }
 
     /// Returns `true` if this validator has all consensus-agreed network keys loaded locally.

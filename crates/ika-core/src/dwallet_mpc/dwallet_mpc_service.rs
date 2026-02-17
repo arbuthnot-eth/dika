@@ -331,10 +331,8 @@ impl DWalletMPCService {
         let unsent_presign_requests = self.dwallet_mpc_manager.get_unsent_presign_requests();
 
         // Collect local network key info for the status update.
-        let network_key_ids = self.dwallet_mpc_manager.local_network_key_ids();
-        let checkpoint_key_id = self
-            .dwallet_mpc_manager
-            .checkpoint_signing_network_encryption_key_id();
+        let (network_key_ids, checkpoint_key_id) =
+            self.dwallet_mpc_manager.local_network_key_voting_data();
 
         // Check if there's anything new to send.
         let has_unsent_requests = !unsent_presign_requests.is_empty();
@@ -603,15 +601,16 @@ impl DWalletMPCService {
                 }
             }
 
-            // 2. BLOCK: if we don't have the agreed keys, stop processing this round entirely.
-            //    Retry on next service loop iteration (20ms). By then, keys may have arrived
-            //    via maybe_update_network_keys() in handle_new_requests().
-            if !self.dwallet_mpc_manager.has_all_agreed_network_keys() {
+            // 2. BLOCK: busy-wait until we have all agreed keys locally.
+            //    Keys arrive from Sui via a watch channel; polling maybe_update_network_keys()
+            //    checks the channel and processes new keys.
+            while !self.dwallet_mpc_manager.has_all_agreed_network_keys() {
                 warn!(
                     consensus_round,
-                    "Blocking consensus round: missing consensus-agreed network keys, waiting for key sync"
+                    "Waiting for consensus-agreed network keys to arrive locally"
                 );
-                break;
+                self.dwallet_mpc_manager.maybe_update_network_keys().await;
+                tokio::time::sleep(Duration::from_millis(READ_INTERVAL_MS)).await;
             }
 
             // 3. Instantiate internal presign sessions (now uses agreed values).
