@@ -416,14 +416,6 @@ impl DWalletMPCManager {
         })
     }
 
-    /// Deterministically computes the checkpoint key ID as the agreed key with the lowest `dkg_at_epoch`.
-    fn checkpoint_key_id(&self) -> Option<ObjectID> {
-        self.agreed_network_key_data
-            .values()
-            .min_by_key(|data| data.dkg_at_epoch)
-            .map(|data| data.id)
-    }
-
     /// Compute majority vote for idle status using the accumulated `idle_status_by_party`.
     fn compute_idle_status_majority_vote(&self) -> bool {
         if self.idle_status_by_party.is_empty() {
@@ -602,6 +594,15 @@ impl DWalletMPCManager {
         ]
     }
 
+    /// Returns the network encryption key ID used for checkpoint signing (the oldest by DKG epoch).
+    fn checkpoint_signing_network_encryption_key_id(&self) -> Option<ObjectID> {
+        self.network_keys
+            .network_encryption_keys
+            .iter()
+            .min_by(|(_, a), (_, b)| a.dkg_at_epoch.cmp(&b.dkg_at_epoch))
+            .map(|(id, _)| *id)
+    }
+
     /// Instantiates internal presign sessions based on consensus-agreed network key IDs.
     /// Uses only keys that have reached quorum agreement via status update voting.
     pub(super) fn instantiate_internal_presign_sessions(
@@ -610,22 +611,16 @@ impl DWalletMPCManager {
         number_of_consensus_rounds: u64,
         network_is_idle: bool,
     ) {
-        let agreed_checkpoint_key_id = match self.checkpoint_key_id() {
+        // Check if we are ready to instantiate internal sessions, which depend on the consensus agreed (synced) network key data.
+        let agreed_checkpoint_key_id = match self.checkpoint_signing_network_encryption_key_id() {
             Some(id) => id,
             None => return,
         };
 
-        if self.agreed_network_key_data.is_empty() {
-            return;
-        }
-
         let checkpoint_curve = self.protocol_config.checkpoint_signing_curve();
         let checkpoint_algorithm = self.protocol_config.checkpoint_signing_algorithm();
 
-        // Clone the agreed key IDs to avoid borrow conflicts.
-        let agreed_key_ids: Vec<ObjectID> = self.agreed_network_key_data.keys().copied().collect();
-
-        for key_id in agreed_key_ids {
+        for key_id in self.agreed_network_key_data.keys().copied() {
             for (curve, signature_algorithms) in Self::get_supported_curve_to_signature_algorithm()
             {
                 for signature_algorithm in signature_algorithms {
@@ -755,7 +750,7 @@ impl DWalletMPCManager {
         checkpoint_message: Vec<u8>,
     ) -> bool {
         // Use the consensus-agreed checkpoint key ID.
-        let dwallet_network_encryption_key_id = match self.checkpoint_key_id() {
+        let dwallet_network_encryption_key_id = match self.checkpoint_signing_network_encryption_key_id() {
             Some(key_id) => key_id,
             None => {
                 warn!(
