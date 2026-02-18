@@ -399,10 +399,9 @@ impl DWalletMPCService {
                 .values()
                 .filter(|data| !self.sent_network_key_ids.contains(&data.id))
                 .filter(|data| {
-                    matches!(
+                    !matches!(
                         data.state,
-                        DWalletNetworkEncryptionKeyState::NetworkDKGCompleted
-                            | DWalletNetworkEncryptionKeyState::NetworkReconfigurationCompleted
+                        AwaitingNetworkDKG
                     )
                 })
                 .cloned()
