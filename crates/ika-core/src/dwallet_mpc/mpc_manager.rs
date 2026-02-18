@@ -130,10 +130,6 @@ pub(crate) struct DWalletMPCManager {
     /// Most recently consensus-agreed network key data (via inline is_authorized_subset check).
     agreed_network_key_data: HashMap<ObjectID, DWalletNetworkEncryptionKeyData>,
 
-    /// Most recently consensus-agreed checkpoint key ID
-    /// (deterministically computed as the agreed key with the lowest `dkg_at_epoch`).
-    agreed_checkpoint_key_id: Option<ObjectID>,
-
     // The sequence number of the next internal presign session.
     // Starts from 1 in every epoch, and increases as they are spawned.
     // Different epochs will see repeating values of this variable,
@@ -239,7 +235,6 @@ impl DWalletMPCManager {
             sent_presign_requests: HashSet::new(),
             network_key_data_votes: HashMap::new(),
             agreed_network_key_data: HashMap::new(),
-            agreed_checkpoint_key_id: None,
             next_internal_presign_sequence_number: 1,
             epoch_store,
         })
@@ -416,21 +411,20 @@ impl DWalletMPCManager {
         // Perform majority vote on idle status at the end of processing.
         let network_is_idle = self.compute_idle_status_majority_vote();
 
-        // Checkpoint key deterministically: agreed key with lowest dkg_at_epoch.
-        let agreed_checkpoint_key_id = self
-            .agreed_network_key_data
-            .values()
-            .min_by_key(|data| data.dkg_at_epoch)
-            .map(|data| data.id);
-
-        self.agreed_checkpoint_key_id = agreed_checkpoint_key_id;
-
         Some(AgreedStatusUpdate {
             is_idle: network_is_idle,
             global_presign_requests: agreed_presign_requests,
             agreed_network_key_data: self.agreed_network_key_data.clone(),
-            agreed_checkpoint_key_id,
+            agreed_checkpoint_key_id: self.checkpoint_key_id(),
         })
+    }
+
+    /// Deterministically computes the checkpoint key ID as the agreed key with the lowest `dkg_at_epoch`.
+    fn checkpoint_key_id(&self) -> Option<ObjectID> {
+        self.agreed_network_key_data
+            .values()
+            .min_by_key(|data| data.dkg_at_epoch)
+            .map(|data| data.id)
     }
 
     /// Compute majority vote for idle status using the accumulated `idle_status_by_party`.
@@ -619,7 +613,7 @@ impl DWalletMPCManager {
         number_of_consensus_rounds: u64,
         network_is_idle: bool,
     ) {
-        let agreed_checkpoint_key_id = match self.agreed_checkpoint_key_id {
+        let agreed_checkpoint_key_id = match self.checkpoint_key_id() {
             Some(id) => id,
             None => return,
         };
@@ -764,7 +758,7 @@ impl DWalletMPCManager {
         checkpoint_message: Vec<u8>,
     ) -> bool {
         // Use the consensus-agreed checkpoint key ID.
-        let dwallet_network_encryption_key_id = match self.agreed_checkpoint_key_id {
+        let dwallet_network_encryption_key_id = match self.checkpoint_key_id() {
             Some(key_id) => key_id,
             None => {
                 warn!(
