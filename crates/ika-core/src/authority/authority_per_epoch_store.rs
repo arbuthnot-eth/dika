@@ -60,8 +60,8 @@ use ika_types::messages_dwallet_checkpoint::{
     DWalletCheckpointMessage, DWalletCheckpointSequenceNumber, DWalletCheckpointSignatureMessage,
 };
 use ika_types::messages_dwallet_mpc::{
-    DWalletInternalMPCOutput, DWalletMPCMessage, DWalletMPCOutput, IkaNetworkConfig,
-    InternalSessionsStatusUpdate,
+    AssignedPresign, DWalletInternalMPCOutput, DWalletMPCMessage, DWalletMPCOutput,
+    IkaNetworkConfig, InternalSessionsStatusUpdate, SessionIdentifier,
 };
 use ika_types::messages_system_checkpoints::{
     SystemCheckpointMessage, SystemCheckpointMessageKind, SystemCheckpointSequenceNumber,
@@ -248,28 +248,69 @@ pub trait AuthorityPerEpochStoreTrait: Sync + Send + 'static {
         last_consensus_round: Option<Round>,
     ) -> IkaResult<Option<(Round, Vec<DWalletCheckpointMessageKind>)>>;
 
-    /// Inserts presigns into the pool for the given signature algorithm.
+    /// Inserts presigns into the pool for the given signature algorithm and network encryption key.
     fn insert_presigns(
         &self,
         signature_algorithm: DWalletSignatureAlgorithm,
+        dwallet_network_encryption_key_id: ObjectID,
         session_sequence_number: u64,
+        session_identifier: SessionIdentifier,
         presigns: Vec<Vec<u8>>,
     ) -> IkaResult<()>;
 
-    /// Returns the total number of presigns in the pool for the given signature algorithm.
-    fn presign_pool_size(&self, signature_algorithm: DWalletSignatureAlgorithm) -> IkaResult<u64>;
+    /// Returns the total number of presigns in the pool for the given signature algorithm
+    /// and network encryption key.
+    fn presign_pool_size(
+        &self,
+        signature_algorithm: DWalletSignatureAlgorithm,
+        dwallet_network_encryption_key_id: ObjectID,
+    ) -> IkaResult<u64>;
 
-    /// Pops a single presign from the pool for the given signature algorithm.
+    /// Pops a single presign from the pool for the given signature algorithm and network
+    /// encryption key. Returns the session identifier and presign bytes, or None if the pool
+    /// is empty.
     fn pop_presign(
         &self,
         signature_algorithm: DWalletSignatureAlgorithm,
-    ) -> IkaResult<Option<Vec<u8>>>;
+        dwallet_network_encryption_key_id: ObjectID,
+    ) -> IkaResult<Option<(SessionIdentifier, Vec<u8>)>>;
 
     /// Returns the next internal sessions status update after the given consensus round.
     fn next_internal_sessions_status_update(
         &self,
         last_consensus_round: Option<Round>,
     ) -> IkaResult<Option<(Round, Vec<InternalSessionsStatusUpdate>)>>;
+
+    /// Marks a presign as used so it cannot be reused.
+    fn mark_presign_as_used(&self, presign_session_id: SessionIdentifier) -> IkaResult<()>;
+
+    /// Checks if a presign has already been used.
+    fn is_presign_used(&self, presign_session_id: SessionIdentifier) -> IkaResult<bool>;
+
+    /// Assigns a presign to a user by moving it from the internal pool to the assigned pool.
+    /// This is used for external presign requests.
+    fn assign_presign(
+        &self,
+        signature_algorithm: DWalletSignatureAlgorithm,
+        dwallet_network_encryption_key_id: ObjectID,
+        user_verification_key: Option<Vec<u8>>,
+        dwallet_id: Option<ObjectID>,
+        current_epoch: u64,
+    ) -> IkaResult<Option<SessionIdentifier>>;
+
+    /// Retrieves an assigned presign by session identifier and signature algorithm.
+    fn get_assigned_presign(
+        &self,
+        signature_algorithm: DWalletSignatureAlgorithm,
+        session_identifier: SessionIdentifier,
+    ) -> IkaResult<Option<AssignedPresign>>;
+
+    /// Pops an assigned presign from the pool. Used when the presign is consumed for signing.
+    fn pop_assigned_presign(
+        &self,
+        signature_algorithm: DWalletSignatureAlgorithm,
+        session_identifier: SessionIdentifier,
+    ) -> IkaResult<Option<AssignedPresign>>;
 }
 
 impl AuthorityPerEpochStoreTrait for AuthorityPerEpochStore {
@@ -356,24 +397,37 @@ impl AuthorityPerEpochStoreTrait for AuthorityPerEpochStore {
     fn insert_presigns(
         &self,
         signature_algorithm: DWalletSignatureAlgorithm,
+        dwallet_network_encryption_key_id: ObjectID,
         session_sequence_number: u64,
+        session_identifier: SessionIdentifier,
         presigns: Vec<Vec<u8>>,
     ) -> IkaResult<()> {
         let tables = self.tables()?;
-        tables.insert_presigns(signature_algorithm, session_sequence_number, presigns)
+        tables.insert_presigns(
+            signature_algorithm,
+            dwallet_network_encryption_key_id,
+            session_sequence_number,
+            session_identifier,
+            presigns,
+        )
     }
 
-    fn presign_pool_size(&self, signature_algorithm: DWalletSignatureAlgorithm) -> IkaResult<u64> {
+    fn presign_pool_size(
+        &self,
+        signature_algorithm: DWalletSignatureAlgorithm,
+        dwallet_network_encryption_key_id: ObjectID,
+    ) -> IkaResult<u64> {
         let tables = self.tables()?;
-        tables.presign_pool_size(signature_algorithm)
+        tables.presign_pool_size(signature_algorithm, dwallet_network_encryption_key_id)
     }
 
     fn pop_presign(
         &self,
         signature_algorithm: DWalletSignatureAlgorithm,
-    ) -> IkaResult<Option<Vec<u8>>> {
+        dwallet_network_encryption_key_id: ObjectID,
+    ) -> IkaResult<Option<(SessionIdentifier, Vec<u8>)>> {
         let tables = self.tables()?;
-        tables.pop_presign(signature_algorithm)
+        tables.pop_presign(signature_algorithm, dwallet_network_encryption_key_id)
     }
 
     fn next_internal_sessions_status_update(
@@ -389,6 +443,52 @@ impl AuthorityPerEpochStoreTrait for AuthorityPerEpochStore {
         } else {
             Ok(iter.nth(1).transpose()?)
         }
+    }
+
+    fn mark_presign_as_used(&self, presign_session_id: SessionIdentifier) -> IkaResult<()> {
+        let tables = self.tables()?;
+        tables.mark_presign_as_used(presign_session_id)
+    }
+
+    fn is_presign_used(&self, presign_session_id: SessionIdentifier) -> IkaResult<bool> {
+        let tables = self.tables()?;
+        tables.is_presign_used(presign_session_id)
+    }
+
+    fn assign_presign(
+        &self,
+        signature_algorithm: DWalletSignatureAlgorithm,
+        dwallet_network_encryption_key_id: ObjectID,
+        user_verification_key: Option<Vec<u8>>,
+        dwallet_id: Option<ObjectID>,
+        current_epoch: u64,
+    ) -> IkaResult<Option<SessionIdentifier>> {
+        let tables = self.tables()?;
+        tables.assign_presign(
+            signature_algorithm,
+            dwallet_network_encryption_key_id,
+            user_verification_key,
+            dwallet_id,
+            current_epoch,
+        )
+    }
+
+    fn get_assigned_presign(
+        &self,
+        signature_algorithm: DWalletSignatureAlgorithm,
+        session_identifier: SessionIdentifier,
+    ) -> IkaResult<Option<AssignedPresign>> {
+        let tables = self.tables()?;
+        tables.get_assigned_presign(signature_algorithm, session_identifier)
+    }
+
+    fn pop_assigned_presign(
+        &self,
+        signature_algorithm: DWalletSignatureAlgorithm,
+        session_identifier: SessionIdentifier,
+    ) -> IkaResult<Option<AssignedPresign>> {
+        let tables = self.tables()?;
+        tables.pop_assigned_presign(signature_algorithm, session_identifier)
     }
 }
 
@@ -540,27 +640,52 @@ pub struct AuthorityEpochTables {
     #[default_options_override_fn = "dwallet_internal_mpc_outputs_table_default_config"]
     dwallet_internal_mpc_outputs: DBMap<Round, Vec<DWalletInternalMPCOutput>>,
 
-    /// Internal presign pools, keyed by session sequence number.
-    /// Each entry contains presigns generated by that session.
-    /// Presigns are consumed in order (lowest session sequence number first).
+    /// Internal presign pools, keyed by (network_encryption_key_id, session_sequence_number).
+    /// Each entry contains presigns generated by that session, along with the session identifier.
+    /// Presigns are consumed in order (lowest session sequence number first) within a given key ID.
+    /// Value is (SessionIdentifier, Vec<presign_bytes>) - the session ID and list of presigns.
     #[default_options_override_fn = "internal_presign_pool_table_default_config"]
-    internal_presign_pool_ecdsa_secp256k1: DBMap<u64, Vec<Vec<u8>>>,
+    internal_presign_pool_ecdsa_secp256k1:
+        DBMap<(ObjectID, u64), (SessionIdentifier, Vec<Vec<u8>>)>,
     #[default_options_override_fn = "internal_presign_pool_table_default_config"]
-    internal_presign_pool_ecdsa_secp256r1: DBMap<u64, Vec<Vec<u8>>>,
+    internal_presign_pool_ecdsa_secp256r1:
+        DBMap<(ObjectID, u64), (SessionIdentifier, Vec<Vec<u8>>)>,
     #[default_options_override_fn = "internal_presign_pool_table_default_config"]
-    internal_presign_pool_eddsa: DBMap<u64, Vec<Vec<u8>>>,
+    internal_presign_pool_eddsa: DBMap<(ObjectID, u64), (SessionIdentifier, Vec<Vec<u8>>)>,
     #[default_options_override_fn = "internal_presign_pool_table_default_config"]
-    internal_presign_pool_taproot: DBMap<u64, Vec<Vec<u8>>>,
+    internal_presign_pool_taproot: DBMap<(ObjectID, u64), (SessionIdentifier, Vec<Vec<u8>>)>,
     #[default_options_override_fn = "internal_presign_pool_table_default_config"]
-    internal_presign_pool_schnorrkel_substrate: DBMap<u64, Vec<Vec<u8>>>,
+    internal_presign_pool_schnorrkel_substrate:
+        DBMap<(ObjectID, u64), (SessionIdentifier, Vec<Vec<u8>>)>,
 
-    /// Tracks the total count of presigns in each pool by signature algorithm.
-    /// Key is the algorithm discriminant, value is the count.
-    internal_presign_pool_sizes: DBMap<DWalletSignatureAlgorithm, u64>,
+    /// Tracks the total count of presigns in each pool by (signature algorithm, network encryption key ID).
+    /// Value is the count.
+    internal_presign_pool_sizes: DBMap<(DWalletSignatureAlgorithm, ObjectID), u64>,
 
     /// Internal sessions status updates by consensus round.
     #[default_options_override_fn = "internal_sessions_status_updates_table_default_config"]
     internal_sessions_status_updates: DBMap<Round, Vec<InternalSessionsStatusUpdate>>,
+
+    /// Tracks presigns that have been consumed for signing.
+    /// Key: SessionIdentifier - the session ID of the presign session that created the presign
+    /// Value: () - just marks it as used
+    /// Once a presign is used, it should never be used again.
+    used_presigns: DBMap<SessionIdentifier, ()>,
+
+    /// Assigned presigns pools for external presigns.
+    /// Key: SessionIdentifier - the session ID that uniquely identifies this assigned presign
+    /// Value: AssignedPresign - contains presign data, user verification key, dwallet_id (for non-global), and epoch
+    /// These expire at the end of the epoch and are used for external sign requests.
+    #[default_options_override_fn = "assigned_presign_pool_table_default_config"]
+    assigned_presigns_ecdsa_secp256k1: DBMap<SessionIdentifier, AssignedPresign>,
+    #[default_options_override_fn = "assigned_presign_pool_table_default_config"]
+    assigned_presigns_ecdsa_secp256r1: DBMap<SessionIdentifier, AssignedPresign>,
+    #[default_options_override_fn = "assigned_presign_pool_table_default_config"]
+    assigned_presigns_eddsa: DBMap<SessionIdentifier, AssignedPresign>,
+    #[default_options_override_fn = "assigned_presign_pool_table_default_config"]
+    assigned_presigns_taproot: DBMap<SessionIdentifier, AssignedPresign>,
+    #[default_options_override_fn = "assigned_presign_pool_table_default_config"]
+    assigned_presigns_schnorrkel_substrate: DBMap<SessionIdentifier, AssignedPresign>,
 }
 
 fn pending_consensus_transactions_table_default_config() -> DBOptions {
@@ -606,6 +731,12 @@ fn internal_presign_pool_table_default_config() -> DBOptions {
 }
 
 fn internal_sessions_status_updates_table_default_config() -> DBOptions {
+    default_db_options()
+        .optimize_for_write_throughput()
+        .optimize_for_large_values_no_scan(1 << 10)
+}
+
+fn assigned_presign_pool_table_default_config() -> DBOptions {
     default_db_options()
         .optimize_for_write_throughput()
         .optimize_for_large_values_no_scan(1 << 10)
@@ -657,7 +788,7 @@ impl AuthorityEpochTables {
     fn presign_pool_table(
         &self,
         signature_algorithm: DWalletSignatureAlgorithm,
-    ) -> &DBMap<u64, Vec<Vec<u8>>> {
+    ) -> &DBMap<(ObjectID, u64), (SessionIdentifier, Vec<Vec<u8>>)> {
         match signature_algorithm {
             DWalletSignatureAlgorithm::ECDSASecp256k1 => {
                 &self.internal_presign_pool_ecdsa_secp256k1
@@ -673,61 +804,75 @@ impl AuthorityEpochTables {
         }
     }
 
-    /// Inserts presigns into the pool for the given signature algorithm.
-    /// The presigns are keyed by session sequence number.
+    /// Inserts presigns into the pool for the given signature algorithm and network encryption key.
+    /// The presigns are keyed by (network_encryption_key_id, session_sequence_number).
     pub fn insert_presigns(
         &self,
         signature_algorithm: DWalletSignatureAlgorithm,
+        dwallet_network_encryption_key_id: ObjectID,
         session_sequence_number: u64,
+        session_identifier: SessionIdentifier,
         presigns: Vec<Vec<u8>>,
     ) -> IkaResult<()> {
         let num_presigns = presigns.len() as u64;
         let table = self.presign_pool_table(signature_algorithm);
-        table.insert(&session_sequence_number, &presigns)?;
+        let key = (dwallet_network_encryption_key_id, session_sequence_number);
+        table.insert(&key, &(session_identifier, presigns))?;
 
         // Update the size counter
+        let size_key = (signature_algorithm, dwallet_network_encryption_key_id);
         let current_size = self
             .internal_presign_pool_sizes
-            .get(&signature_algorithm)?
+            .get(&size_key)?
             .unwrap_or(0);
         self.internal_presign_pool_sizes
-            .insert(&signature_algorithm, &(current_size + num_presigns))?;
+            .insert(&size_key, &(current_size + num_presigns))?;
 
         Ok(())
     }
 
-    /// Returns the total number of presigns in the pool for the given signature algorithm.
+    /// Returns the total number of presigns in the pool for the given signature algorithm
+    /// and network encryption key.
     pub fn presign_pool_size(
         &self,
         signature_algorithm: DWalletSignatureAlgorithm,
+        dwallet_network_encryption_key_id: ObjectID,
     ) -> IkaResult<u64> {
+        let size_key = (signature_algorithm, dwallet_network_encryption_key_id);
         Ok(self
             .internal_presign_pool_sizes
-            .get(&signature_algorithm)?
+            .get(&size_key)?
             .unwrap_or(0))
     }
 
-    /// Pops a single presign from the pool for the given signature algorithm.
-    /// Returns the presign bytes, or None if the pool is empty.
-    /// Presigns are consumed in order of session sequence number (lowest first).
+    /// Pops a single presign from the pool for the given signature algorithm and network
+    /// encryption key. Returns the session identifier and presign bytes, or None if the pool
+    /// is empty. Presigns are consumed in order of session sequence number (lowest first).
     pub fn pop_presign(
         &self,
         signature_algorithm: DWalletSignatureAlgorithm,
-    ) -> IkaResult<Option<Vec<u8>>> {
+        dwallet_network_encryption_key_id: ObjectID,
+    ) -> IkaResult<Option<(SessionIdentifier, Vec<u8>)>> {
         let table = self.presign_pool_table(signature_algorithm);
 
-        // Get the first entry (lowest session sequence number)
-        let first_entry = table.safe_iter().next();
+        // Get the first entry for this network encryption key ID.
+        // Use an inclusive range to constrain iteration to only entries for this key_id.
+        let first_entry = table
+            .safe_range_iter(
+                (dwallet_network_encryption_key_id, 0u64)
+                    ..=(dwallet_network_encryption_key_id, u64::MAX),
+            )
+            .next();
 
         let Some(entry_result) = first_entry else {
             return Ok(None);
         };
 
-        let (session_seq, mut presigns) = entry_result?;
+        let (key, (session_identifier, mut presigns)) = entry_result?;
 
         if presigns.is_empty() {
             // This shouldn't happen, but handle it gracefully
-            table.remove(&session_seq)?;
+            table.remove(&key)?;
             return Ok(None);
         }
 
@@ -736,21 +881,106 @@ impl AuthorityEpochTables {
 
         if presigns.is_empty() {
             // No more presigns for this session, remove the entry
-            table.remove(&session_seq)?;
+            table.remove(&key)?;
         } else {
             // Update the entry with remaining presigns
-            table.insert(&session_seq, &presigns)?;
+            table.insert(&key, &(session_identifier, presigns))?;
         }
 
         // Decrement the size counter
+        let size_key = (signature_algorithm, dwallet_network_encryption_key_id);
         let current_size = self
             .internal_presign_pool_sizes
-            .get(&signature_algorithm)?
+            .get(&size_key)?
             .unwrap_or(1);
         self.internal_presign_pool_sizes
-            .insert(&signature_algorithm, &(current_size.saturating_sub(1)))?;
+            .insert(&size_key, &(current_size.saturating_sub(1)))?;
 
-        Ok(Some(presign))
+        Ok(Some((session_identifier, presign)))
+    }
+
+    /// Marks a presign as used so it cannot be reused.
+    pub fn mark_presign_as_used(&self, presign_session_id: SessionIdentifier) -> IkaResult<()> {
+        self.used_presigns.insert(&presign_session_id, &())?;
+        Ok(())
+    }
+
+    /// Checks if a presign has already been used.
+    pub fn is_presign_used(&self, presign_session_id: SessionIdentifier) -> IkaResult<bool> {
+        Ok(self.used_presigns.contains_key(&presign_session_id)?)
+    }
+
+    /// Returns a reference to the assigned presign pool table for the given signature algorithm.
+    fn assigned_presign_pool_table(
+        &self,
+        signature_algorithm: DWalletSignatureAlgorithm,
+    ) -> &DBMap<SessionIdentifier, AssignedPresign> {
+        match signature_algorithm {
+            DWalletSignatureAlgorithm::ECDSASecp256k1 => &self.assigned_presigns_ecdsa_secp256k1,
+            DWalletSignatureAlgorithm::ECDSASecp256r1 => &self.assigned_presigns_ecdsa_secp256r1,
+            DWalletSignatureAlgorithm::EdDSA => &self.assigned_presigns_eddsa,
+            DWalletSignatureAlgorithm::Taproot => &self.assigned_presigns_taproot,
+            DWalletSignatureAlgorithm::SchnorrkelSubstrate => {
+                &self.assigned_presigns_schnorrkel_substrate
+            }
+        }
+    }
+
+    /// Assigns a presign to a user by moving it from the internal pool to the assigned pool.
+    /// This is used for external presign requests.
+    pub fn assign_presign(
+        &self,
+        signature_algorithm: DWalletSignatureAlgorithm,
+        dwallet_network_encryption_key_id: ObjectID,
+        user_verification_key: Option<Vec<u8>>,
+        dwallet_id: Option<ObjectID>,
+        current_epoch: u64,
+    ) -> IkaResult<Option<SessionIdentifier>> {
+        // Pop a presign from the internal pool
+        let Some((session_identifier, presign)) =
+            self.pop_presign(signature_algorithm, dwallet_network_encryption_key_id)?
+        else {
+            return Ok(None);
+        };
+
+        // Create the assigned presign
+        let assigned_presign = AssignedPresign {
+            session_identifier,
+            presign,
+            user_verification_key,
+            dwallet_id,
+            assigned_epoch: current_epoch,
+        };
+
+        // Store it in the assigned pool
+        let table = self.assigned_presign_pool_table(signature_algorithm);
+        table.insert(&session_identifier, &assigned_presign)?;
+
+        Ok(Some(session_identifier))
+    }
+
+    /// Retrieves an assigned presign by session identifier and signature algorithm.
+    pub fn get_assigned_presign(
+        &self,
+        signature_algorithm: DWalletSignatureAlgorithm,
+        session_identifier: SessionIdentifier,
+    ) -> IkaResult<Option<AssignedPresign>> {
+        let table = self.assigned_presign_pool_table(signature_algorithm);
+        Ok(table.get(&session_identifier)?)
+    }
+
+    /// Pops an assigned presign from the pool. Used when the presign is consumed for signing.
+    pub fn pop_assigned_presign(
+        &self,
+        signature_algorithm: DWalletSignatureAlgorithm,
+        session_identifier: SessionIdentifier,
+    ) -> IkaResult<Option<AssignedPresign>> {
+        let table = self.assigned_presign_pool_table(signature_algorithm);
+        let assigned_presign = table.get(&session_identifier)?;
+        if assigned_presign.is_some() {
+            table.remove(&session_identifier)?;
+        }
+        Ok(assigned_presign)
     }
 }
 
@@ -2175,5 +2405,209 @@ impl From<LockDetails> for LockDetailsWrapper {
     fn from(details: LockDetails) -> Self {
         // always use latest version.
         LockDetailsWrapper::V1(details)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dwallet_mpc_types::dwallet_mpc::DWalletSignatureAlgorithm;
+    use ika_types::messages_dwallet_mpc::{SessionIdentifier, SessionType};
+    use sui_types::base_types::ObjectID;
+
+    fn create_tables() -> AuthorityEpochTables {
+        let dir = tempfile::tempdir().unwrap();
+        AuthorityEpochTables::open(0, dir.path(), None)
+    }
+
+    fn make_session_id(preimage: [u8; 32]) -> SessionIdentifier {
+        SessionIdentifier::new(SessionType::InternalPresign, preimage)
+    }
+
+    #[test]
+    fn test_insert_and_pop_presign() {
+        let tables = create_tables();
+        let key_id = ObjectID::random();
+        let algorithm = DWalletSignatureAlgorithm::ECDSASecp256k1;
+        let session_id = make_session_id([1; 32]);
+        let presigns = vec![vec![1u8, 2, 3], vec![4, 5, 6]];
+
+        tables
+            .insert_presigns(algorithm, key_id, 0, session_id, presigns)
+            .unwrap();
+
+        assert_eq!(tables.presign_pool_size(algorithm, key_id).unwrap(), 2);
+
+        let (popped_session, first_presign) =
+            tables.pop_presign(algorithm, key_id).unwrap().unwrap();
+        assert_eq!(popped_session, session_id);
+        assert_eq!(first_presign, vec![1u8, 2, 3]);
+        assert_eq!(tables.presign_pool_size(algorithm, key_id).unwrap(), 1);
+
+        let (_, second_presign) = tables.pop_presign(algorithm, key_id).unwrap().unwrap();
+        assert_eq!(second_presign, vec![4u8, 5, 6]);
+        assert_eq!(tables.presign_pool_size(algorithm, key_id).unwrap(), 0);
+
+        assert!(tables.pop_presign(algorithm, key_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_presign_pool_isolation_across_key_ids() {
+        let tables = create_tables();
+        let key_id_a = ObjectID::random();
+        let key_id_b = ObjectID::random();
+        let algorithm = DWalletSignatureAlgorithm::ECDSASecp256k1;
+        let session_id_a = make_session_id([10; 32]);
+        let session_id_b = make_session_id([20; 32]);
+        let presigns_a = vec![vec![10u8], vec![11]];
+        let presigns_b = vec![vec![20u8], vec![21], vec![22]];
+
+        tables
+            .insert_presigns(algorithm, key_id_a, 0, session_id_a, presigns_a)
+            .unwrap();
+        tables
+            .insert_presigns(algorithm, key_id_b, 0, session_id_b, presigns_b)
+            .unwrap();
+
+        assert_eq!(tables.presign_pool_size(algorithm, key_id_a).unwrap(), 2);
+        assert_eq!(tables.presign_pool_size(algorithm, key_id_b).unwrap(), 3);
+
+        let (popped_session, presign) = tables.pop_presign(algorithm, key_id_a).unwrap().unwrap();
+        assert_eq!(popped_session, session_id_a);
+        assert_eq!(presign, vec![10u8]);
+        assert_eq!(tables.presign_pool_size(algorithm, key_id_a).unwrap(), 1);
+        assert_eq!(tables.presign_pool_size(algorithm, key_id_b).unwrap(), 3);
+
+        let (popped_session, presign) = tables.pop_presign(algorithm, key_id_b).unwrap().unwrap();
+        assert_eq!(popped_session, session_id_b);
+        assert_eq!(presign, vec![20u8]);
+
+        // Exhaust key_id_a
+        tables.pop_presign(algorithm, key_id_a).unwrap().unwrap();
+        assert!(tables.pop_presign(algorithm, key_id_a).unwrap().is_none());
+        assert_eq!(tables.presign_pool_size(algorithm, key_id_a).unwrap(), 0);
+
+        // key_id_b still has presigns
+        assert_eq!(tables.presign_pool_size(algorithm, key_id_b).unwrap(), 2);
+        let (_, presign) = tables.pop_presign(algorithm, key_id_b).unwrap().unwrap();
+        assert_eq!(presign, vec![21u8]);
+    }
+
+    #[test]
+    fn test_pop_presign_ordering_across_sessions() {
+        let tables = create_tables();
+        let key_id = ObjectID::random();
+        let algorithm = DWalletSignatureAlgorithm::ECDSASecp256k1;
+
+        // Insert out of order by session_sequence_number
+        tables
+            .insert_presigns(
+                algorithm,
+                key_id,
+                10,
+                make_session_id([10; 32]),
+                vec![vec![10u8]],
+            )
+            .unwrap();
+        tables
+            .insert_presigns(
+                algorithm,
+                key_id,
+                5,
+                make_session_id([5; 32]),
+                vec![vec![5u8]],
+            )
+            .unwrap();
+        tables
+            .insert_presigns(
+                algorithm,
+                key_id,
+                20,
+                make_session_id([20; 32]),
+                vec![vec![20u8]],
+            )
+            .unwrap();
+
+        assert_eq!(tables.presign_pool_size(algorithm, key_id).unwrap(), 3);
+
+        // Should pop in ascending session_sequence_number order
+        let (_, presign) = tables.pop_presign(algorithm, key_id).unwrap().unwrap();
+        assert_eq!(presign, vec![5u8]);
+
+        let (_, presign) = tables.pop_presign(algorithm, key_id).unwrap().unwrap();
+        assert_eq!(presign, vec![10u8]);
+
+        let (_, presign) = tables.pop_presign(algorithm, key_id).unwrap().unwrap();
+        assert_eq!(presign, vec![20u8]);
+
+        assert!(tables.pop_presign(algorithm, key_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_pop_from_empty_pool() {
+        let tables = create_tables();
+        let key_id = ObjectID::random();
+        let algorithm = DWalletSignatureAlgorithm::ECDSASecp256k1;
+
+        assert!(tables.pop_presign(algorithm, key_id).unwrap().is_none());
+        assert_eq!(tables.presign_pool_size(algorithm, key_id).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_multiple_presigns_per_session() {
+        let tables = create_tables();
+        let key_id = ObjectID::random();
+        let algorithm = DWalletSignatureAlgorithm::ECDSASecp256k1;
+        let session_id = make_session_id([42; 32]);
+        let presigns = vec![vec![1u8], vec![2], vec![3]];
+
+        tables
+            .insert_presigns(algorithm, key_id, 0, session_id, presigns)
+            .unwrap();
+
+        assert_eq!(tables.presign_pool_size(algorithm, key_id).unwrap(), 3);
+
+        let (_, presign) = tables.pop_presign(algorithm, key_id).unwrap().unwrap();
+        assert_eq!(presign, vec![1u8]);
+        assert_eq!(tables.presign_pool_size(algorithm, key_id).unwrap(), 2);
+
+        let (_, presign) = tables.pop_presign(algorithm, key_id).unwrap().unwrap();
+        assert_eq!(presign, vec![2u8]);
+        assert_eq!(tables.presign_pool_size(algorithm, key_id).unwrap(), 1);
+
+        let (_, presign) = tables.pop_presign(algorithm, key_id).unwrap().unwrap();
+        assert_eq!(presign, vec![3u8]);
+        assert_eq!(tables.presign_pool_size(algorithm, key_id).unwrap(), 0);
+
+        assert!(tables.pop_presign(algorithm, key_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_presign_pool_isolation_across_algorithms() {
+        let tables = create_tables();
+        let key_id = ObjectID::random();
+        let ecdsa = DWalletSignatureAlgorithm::ECDSASecp256k1;
+        let eddsa = DWalletSignatureAlgorithm::EdDSA;
+        let session_ecdsa = make_session_id([1; 32]);
+        let session_eddsa = make_session_id([2; 32]);
+
+        tables
+            .insert_presigns(ecdsa, key_id, 0, session_ecdsa, vec![vec![100u8]])
+            .unwrap();
+        tables
+            .insert_presigns(eddsa, key_id, 0, session_eddsa, vec![vec![200u8]])
+            .unwrap();
+
+        assert_eq!(tables.presign_pool_size(ecdsa, key_id).unwrap(), 1);
+        assert_eq!(tables.presign_pool_size(eddsa, key_id).unwrap(), 1);
+
+        let (_, presign) = tables.pop_presign(ecdsa, key_id).unwrap().unwrap();
+        assert_eq!(presign, vec![100u8]);
+        assert_eq!(tables.presign_pool_size(ecdsa, key_id).unwrap(), 0);
+
+        // EdDSA pool unaffected
+        assert_eq!(tables.presign_pool_size(eddsa, key_id).unwrap(), 1);
+        let (_, presign) = tables.pop_presign(eddsa, key_id).unwrap().unwrap();
+        assert_eq!(presign, vec![200u8]);
     }
 }

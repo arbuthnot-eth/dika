@@ -125,6 +125,8 @@ pub struct InternalSessionsStatusUpdate {
     pub is_idle: bool,
     /// The global presign requests this validator received.
     pub global_presign_requests: Vec<GlobalPresignRequest>,
+    /// Network encryption key data this validator has loaded from Sui.
+    pub network_key_data: Vec<DWalletNetworkEncryptionKeyData>,
 }
 
 impl InternalSessionsStatusUpdate {
@@ -133,6 +135,7 @@ impl InternalSessionsStatusUpdate {
         authority: AuthorityName,
         is_idle: bool,
         global_presign_requests: Vec<GlobalPresignRequest>,
+        network_key_data: Vec<DWalletNetworkEncryptionKeyData>,
     ) -> Self {
         use rand::RngCore;
         let mut nonce = [0u8; 32];
@@ -142,8 +145,26 @@ impl InternalSessionsStatusUpdate {
             nonce,
             is_idle,
             global_presign_requests,
+            network_key_data,
         }
     }
+}
+
+/// An assigned presign that has been popped from the internal pool and assigned to a user
+/// for signing. Expires at the end of the epoch.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AssignedPresign {
+    /// The session identifier of the presign session that created this presign.
+    pub session_identifier: SessionIdentifier,
+    /// The actual presign data.
+    pub presign: Vec<u8>,
+    /// The user's Ed25519 verification key for signature verification.
+    /// TODO: Placeholder - will be populated when user verification is implemented.
+    pub user_verification_key: Option<Vec<u8>>,
+    /// The dwallet ID (for non-global dwallets like ECDSA imported wallets and v1 dwallets).
+    pub dwallet_id: Option<ObjectID>,
+    /// The epoch when this presign was assigned (for expiry).
+    pub assigned_epoch: u64,
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Ord, PartialOrd, Debug, Serialize, Deserialize)]
@@ -154,17 +175,6 @@ pub enum DWalletMPCOutputKind {
     External {
         output: Vec<DWalletCheckpointMessageKind>,
     },
-}
-
-impl DWalletMPCOutput {
-    // TODO: delete
-    pub fn rejected(&self) -> Option<bool> {
-        if let [output] = &self.output[..] {
-            output.rejected()
-        } else {
-            None
-        }
-    }
 }
 
 impl DWalletMPCOutputKind {
@@ -668,6 +678,9 @@ pub struct PresignRequestEvent {
     pub dwallet_network_encryption_key_id: ObjectID,
     pub curve: u32,
     pub signature_algorithm: u32,
+    /// User's Ed25519 verification key for presign assignment authorization.
+    /// TODO: Placeholder - will be populated when user verification is implemented.
+    pub user_verification_key: Option<Vec<u8>>,
 }
 
 impl DWalletSessionEventTrait for PresignRequestEvent {
@@ -927,6 +940,14 @@ pub struct SignRequestEvent {
 
     /// Indicates whether the future sign feature was used to start the session.
     pub is_future_sign: bool,
+
+    /// User's Ed25519 verification key for presign usage authorization.
+    /// TODO: Placeholder - will be populated when user verification is implemented.
+    pub user_verification_key: Option<Vec<u8>>,
+
+    /// User's signature over the message and presign session ID, proving authorization to use this presign.
+    /// TODO: Placeholder - will be populated when user verification is implemented.
+    pub user_signature: Option<Vec<u8>>,
 }
 
 impl DWalletSessionEventTrait for SignRequestEvent {
@@ -978,7 +999,7 @@ pub struct DWalletNetworkEncryptionKey {
     pub state: DWalletNetworkEncryptionKeyState,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DWalletNetworkEncryptionKeyData {
     pub id: ObjectID,
     pub current_epoch: u64,
@@ -989,7 +1010,7 @@ pub struct DWalletNetworkEncryptionKeyData {
 }
 
 /// Represents the Rust version of the Move enum `ika_system::dwallet_2pc_mpc_coordinator_inner::DWalletNetworkEncryptionKeyState`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum DWalletNetworkEncryptionKeyState {
     AwaitingNetworkDKG,
     NetworkDKGCompleted,
