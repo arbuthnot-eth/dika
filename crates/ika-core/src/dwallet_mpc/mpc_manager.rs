@@ -123,10 +123,14 @@ pub(crate) struct DWalletMPCManager {
     /// This prevents sending the same request multiple times.
     sent_presign_requests: HashSet<SessionIdentifier>,
 
-    /// Per-key voting: which parties report what data for each network key.
-    network_key_data_votes: HashMap<ObjectID, HashMap<PartyID, DWalletNetworkEncryptionKeyData>>,
+    /// Per-key voting: maps each key ID to a map from data values to the set of parties that voted for that data.
+    network_key_data_votes:
+        HashMap<ObjectID, HashMap<DWalletNetworkEncryptionKeyData, HashSet<PartyID>>>,
 
-    /// Most recently consensus-agreed network key data (via weighted majority vote on the data itself).
+    /// Key IDs that have already reached agreement. Once agreed, skip further tallying.
+    agreed_network_key_ids: HashSet<ObjectID>,
+
+    /// Most recently consensus-agreed network key data (via inline is_authorized_subset check).
     agreed_network_key_data: HashMap<ObjectID, DWalletNetworkEncryptionKeyData>,
 
     /// Most recently consensus-agreed checkpoint key ID
@@ -237,6 +241,7 @@ impl DWalletMPCManager {
             global_presign_requests: Vec::new(),
             sent_presign_requests: HashSet::new(),
             network_key_data_votes: HashMap::new(),
+            agreed_network_key_ids: HashSet::new(),
             agreed_network_key_data: HashMap::new(),
             agreed_checkpoint_key_id: None,
             next_internal_presign_sequence_number: 1,
@@ -383,46 +388,52 @@ impl DWalletMPCManager {
                 }
             }
 
-            // Vote on network key data.
-            for key_data in &status_update.network_key_data {
-                self.network_key_data_votes
-                    .entry(key_data.id)
+            // Vote on network key data with inline is_authorized_subset check.
+            for key_data in status_update.network_key_data {
+                let key_id = key_data.id;
+
+                // Skip if this key has already reached agreement.
+                if self.agreed_network_key_ids.contains(&key_id) {
+                    continue;
+                }
+
+                // Add this party's vote for this specific key data.
+                let parties = self
+                    .network_key_data_votes
+                    .entry(key_id)
                     .or_default()
-                    .insert(sender_party_id, key_data.clone());
+                    .entry(key_data.clone())
+                    .or_default();
+                parties.insert(sender_party_id);
+
+                // Check if the parties that voted for this data form an authorized subset.
+                if self.access_structure.is_authorized_subset(parties).is_ok() {
+                    self.agreed_network_key_ids.insert(key_id);
+                    self.agreed_network_key_data.insert(key_id, key_data);
+                    info!(
+                        ?key_id,
+                        consensus_round, "Network key data has been agreed upon"
+                    );
+                }
             }
         }
 
         // Perform majority vote on idle status at the end of processing.
         let network_is_idle = self.compute_idle_status_majority_vote();
 
-        // Weighted majority vote on the key data itself (per key ID).
-        let agreed_network_key_data: HashMap<ObjectID, DWalletNetworkEncryptionKeyData> = self
-            .network_key_data_votes
-            .iter()
-            .filter_map(|(key_id, party_votes)| {
-                match party_votes
-                    .clone()
-                    .weighted_majority_vote(&self.access_structure)
-                {
-                    Ok((_, agreed_data)) => Some((*key_id, agreed_data)),
-                    Err(_) => None,
-                }
-            })
-            .collect();
-
         // Checkpoint key deterministically: agreed key with lowest dkg_at_epoch.
-        let agreed_checkpoint_key_id = agreed_network_key_data
+        let agreed_checkpoint_key_id = self
+            .agreed_network_key_data
             .values()
             .min_by_key(|data| data.dkg_at_epoch)
             .map(|data| data.id);
 
-        self.agreed_network_key_data = agreed_network_key_data.clone();
         self.agreed_checkpoint_key_id = agreed_checkpoint_key_id;
 
         Some(AgreedStatusUpdate {
             is_idle: network_is_idle,
             global_presign_requests: agreed_presign_requests,
-            agreed_network_key_data,
+            agreed_network_key_data: self.agreed_network_key_data.clone(),
             agreed_checkpoint_key_id,
         })
     }
