@@ -45,7 +45,8 @@ use ika_types::message::{
 use ika_types::messages_consensus::ConsensusTransaction;
 use ika_types::messages_dwallet_mpc::{
     DWalletInternalMPCOutputKind, DWalletMPCOutputKind, DWalletMPCOutputReport,
-    GlobalPresignRequest, InternalSessionsStatusUpdate, SessionIdentifier, SessionType,
+    DWalletNetworkEncryptionKeyState, GlobalPresignRequest, InternalSessionsStatusUpdate,
+    SessionIdentifier, SessionType,
     UserSecretKeyShareEventType,
 };
 use ika_types::sui::EpochStartSystem;
@@ -57,6 +58,7 @@ use prometheus::Registry;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
+use sui_types::base_types::ObjectID;
 use sui_types::messages_consensus::Round;
 use tokio::sync::mpsc::UnboundedReceiver;
 #[cfg(feature = "test-utils")]
@@ -95,6 +97,8 @@ pub struct DWalletMPCService {
     processed_global_presign_requests_session_identifiers: HashSet<SessionIdentifier>,
     /// Receiver for internal checkpoint signing requests from the checkpoint service.
     internal_checkpoint_sign_receiver: UnboundedReceiver<InternalCheckpointSignRequest>,
+    /// Tracks which network key IDs have already been sent through consensus.
+    sent_network_key_ids: HashSet<ObjectID>,
 }
 
 impl DWalletMPCService {
@@ -164,6 +168,7 @@ impl DWalletMPCService {
             agreed_global_presign_requests_queue: Vec::new(),
             processed_global_presign_requests_session_identifiers: HashSet::new(),
             internal_checkpoint_sign_receiver,
+            sent_network_key_ids: HashSet::new(),
         }
     }
 
@@ -216,6 +221,7 @@ impl DWalletMPCService {
             processed_global_presign_requests_session_identifiers: HashSet::new(),
             agreed_global_presign_requests_queue: Vec::new(),
             internal_checkpoint_sign_receiver,
+            sent_network_key_ids: HashSet::new(),
         }
     }
 
@@ -272,6 +278,8 @@ impl DWalletMPCService {
             validator=?self.name,
             "Spawning dWallet MPC Service"
         );
+
+        let mut newly_instantiated_network_key_ids = vec![];
         loop {
             match self.exit.has_changed() {
                 Ok(true) => {
@@ -304,13 +312,18 @@ impl DWalletMPCService {
                 break;
             }
 
-            self.run_service_loop_iteration().await;
+            newly_instantiated_network_key_ids = self
+                .run_service_loop_iteration(newly_instantiated_network_key_ids)
+                .await;
 
             tokio::time::sleep(Duration::from_millis(READ_INTERVAL_MS)).await;
         }
     }
 
-    pub(crate) async fn run_service_loop_iteration(&mut self) {
+    pub(crate) async fn run_service_loop_iteration(
+        &mut self,
+        newly_instantiated_network_key_ids: Vec<ObjectID>,
+    ) -> Vec<ObjectID> {
         debug!("Running DWalletMPCService loop");
         self.sync_last_session_to_complete_in_current_epoch().await;
 
@@ -318,16 +331,21 @@ impl DWalletMPCService {
         self.process_internal_checkpoint_sign_requests();
 
         // Receive **new** dWallet MPC events and save them in the local DB.
-        let rejected_sessions = self.handle_new_requests().await.unwrap_or_else(|e| {
-            error!(error=?e, "failed to handle new events from DWallet MPC service");
-            vec![]
-        });
+        let rejected_sessions = self
+            .handle_new_requests(newly_instantiated_network_key_ids)
+            .await
+            .unwrap_or_else(|e| {
+                error!(error=?e, "failed to handle new events from DWallet MPC service");
+                vec![]
+            });
 
-        self.process_consensus_rounds_from_storage().await;
+        let newly_instantiated_network_key_ids = self.process_consensus_rounds_from_storage().await;
 
         self.process_cryptographic_computations().await;
         self.handle_failed_requests_and_submit_reject_to_consensus(rejected_sessions)
             .await;
+
+        newly_instantiated_network_key_ids
     }
 
     /// Process internal checkpoint sign requests received from the checkpoint service.
@@ -362,7 +380,8 @@ impl DWalletMPCService {
         }
     }
 
-    /// Send status update to consensus if there are unsent presign requests or idle status changed.
+    /// Send status update to consensus if there are unsent presign requests,
+    /// idle status changed, or there is new network key data to send.
     async fn send_status_update_to_consensus(&mut self, is_idle: bool) {
         let Some(consensus_round) = self.last_read_consensus_round else {
             return;
@@ -371,16 +390,40 @@ impl DWalletMPCService {
         // Only include presign requests that haven't been sent yet.
         let unsent_presign_requests = self.dwallet_mpc_manager.get_unsent_presign_requests();
 
+        // Read raw key data from the Sui watch channel and filter to keys not yet sent
+        // and only in completed states (with actual usable data).
+        // Scoped to ensure the RwLockReadGuard is dropped before any `.await`.
+        let new_key_data: Vec<_> = {
+            let all_key_data = self.sui_data_requests.network_keys_receiver.borrow();
+            all_key_data
+                .values()
+                .filter(|data| !self.sent_network_key_ids.contains(&data.id))
+                .filter(|data| {
+                    matches!(
+                        data.state,
+                        DWalletNetworkEncryptionKeyState::NetworkDKGCompleted
+                            | DWalletNetworkEncryptionKeyState::NetworkReconfigurationCompleted
+                    )
+                })
+                .cloned()
+                .collect()
+        };
+
         // Check if there's anything new to send.
         let has_unsent_requests = !unsent_presign_requests.is_empty();
         let idle_status_changed = self.last_sent_idle_status != Some(is_idle);
+        let has_new_key_data = !new_key_data.is_empty();
 
-        if !has_unsent_requests && !idle_status_changed {
+        if !has_unsent_requests && !idle_status_changed && !has_new_key_data {
             return;
         }
 
-        let status_update =
-            InternalSessionsStatusUpdate::new(self.name, is_idle, unsent_presign_requests);
+        let status_update = InternalSessionsStatusUpdate::new(
+            self.name,
+            is_idle,
+            unsent_presign_requests,
+            new_key_data.clone(),
+        );
 
         let consensus_tx = ConsensusTransaction::new_internal_sessions_status_update(status_update);
 
@@ -395,8 +438,11 @@ impl DWalletMPCService {
                 "Failed to submit status update to consensus"
             );
         } else {
-            // Update last sent idle status.
+            // Update last sent values.
             self.last_sent_idle_status = Some(is_idle);
+            for key_data in &new_key_data {
+                self.sent_network_key_ids.insert(key_data.id);
+            }
         }
     }
 
@@ -419,7 +465,10 @@ impl DWalletMPCService {
         self.send_status_update_to_consensus(is_idle).await;
     }
 
-    async fn handle_new_requests(&mut self) -> DwalletMPCResult<Vec<DWalletSessionRequest>> {
+    async fn handle_new_requests(
+        &mut self,
+        newly_instantiated_network_key_ids: Vec<ObjectID>,
+    ) -> DwalletMPCResult<Vec<DWalletSessionRequest>> {
         let uncompleted_requests = self.load_uncompleted_requests().await;
         let pulled_requests = match self.receive_new_sui_requests() {
             Ok(requests) => requests,
@@ -476,13 +525,13 @@ impl DWalletMPCService {
 
         let rejected_sessions = self
             .dwallet_mpc_manager
-            .handle_mpc_request_batch(requests)
+            .handle_mpc_request_batch(requests, newly_instantiated_network_key_ids)
             .await;
 
         Ok(rejected_sessions)
     }
 
-    async fn process_consensus_rounds_from_storage(&mut self) {
+    async fn process_consensus_rounds_from_storage(&mut self) -> Vec<ObjectID> {
         // The last consensus round for MPC messages is also the last one for MPC outputs and verified dWallet checkpoint messages,
         // as they are all written in an atomic batch manner as part of committing the consensus commit outputs.
         let last_consensus_round = if let Ok(last_consensus_round) =
@@ -493,12 +542,14 @@ impl DWalletMPCService {
             } else {
                 info!("No consensus round from DB yet, retrying in {DELAY_NO_ROUNDS_SEC} seconds.");
                 tokio::time::sleep(Duration::from_secs(DELAY_NO_ROUNDS_SEC)).await;
-                return;
+                return Vec::new();
             }
         } else {
             error!("failed to get last consensus round from DB");
             panic!("failed to get last consensus round from DB");
         };
+
+        let mut accumulated_new_key_ids = Vec::new();
 
         while Some(last_consensus_round) > self.last_read_consensus_round {
             self.number_of_consensus_rounds += 1;
@@ -667,37 +718,7 @@ impl DWalletMPCService {
                 panic!("consensus round must be in a ascending order");
             }
 
-            // TODO: add to db internal presign session ids that was used, never use again.
-            // TODO: check protocol version here
-            // Instantiate internal presign sessions based on consensus round and idle status.
-            self.dwallet_mpc_manager
-                .instantiate_internal_presign_sessions(
-                    consensus_round,
-                    self.number_of_consensus_rounds,
-                    self.network_is_idle,
-                );
-
-            // Let's start processing the MPC messages for the current round.
-            self.dwallet_mpc_manager
-                .handle_consensus_round_messages(consensus_round, mpc_messages);
-
-            let external_mpc_outputs = external_mpc_outputs
-                .into_iter()
-                .map(DWalletMPCOutputReport::External)
-                .collect();
-            // Process the MPC outputs for the current round.
-            let (agreed_external_mpc_outputs, completed_external_sessions) = self
-                .dwallet_mpc_manager
-                .handle_consensus_round_outputs(consensus_round, external_mpc_outputs);
-
-            let internal_mpc_outputs = internal_mpc_outputs
-                .into_iter()
-                .map(DWalletMPCOutputReport::Internal)
-                .collect();
-            let (_, completed_internal_sessions) = self
-                .dwallet_mpc_manager
-                .handle_consensus_round_outputs(consensus_round, internal_mpc_outputs);
-
+            // 1. Process status updates FIRST to learn consensus-agreed key IDs.
             if let Some(agreed_status) = self
                 .dwallet_mpc_manager
                 .handle_status_updates(consensus_round, status_updates)
@@ -735,11 +756,50 @@ impl DWalletMPCService {
                 }
             }
 
+            // 2. Instantiate any agreed keys we don't have yet, from consensus-voted data.
+            let new_key_ids = self
+                .dwallet_mpc_manager
+                .instantiate_agreed_keys_from_voted_data()
+                .await;
+            accumulated_new_key_ids.extend(new_key_ids);
+
+            // 3. Instantiate internal presign sessions (now uses agreed values).
+            if self.protocol_config.internal_presign_sessions_enabled() {
+                self.dwallet_mpc_manager
+                    .instantiate_internal_presign_sessions(
+                        consensus_round,
+                        self.number_of_consensus_rounds,
+                        self.network_is_idle,
+                    );
+            }
+
+            // 4. Handle MPC messages.
+            self.dwallet_mpc_manager
+                .handle_consensus_round_messages(consensus_round, mpc_messages);
+
+            // 5. Handle MPC outputs.
+            let external_mpc_outputs = external_mpc_outputs
+                .into_iter()
+                .map(DWalletMPCOutputReport::External)
+                .collect();
+            let (agreed_external_mpc_outputs, completed_external_sessions) = self
+                .dwallet_mpc_manager
+                .handle_consensus_round_outputs(consensus_round, external_mpc_outputs);
+
+            let internal_mpc_outputs = internal_mpc_outputs
+                .into_iter()
+                .map(DWalletMPCOutputReport::Internal)
+                .collect();
+            let (_, completed_internal_sessions) = self
+                .dwallet_mpc_manager
+                .handle_consensus_round_outputs(consensus_round, internal_mpc_outputs);
+
             let completed_sessions: Vec<_> = completed_external_sessions
                 .into_iter()
                 .chain(completed_internal_sessions)
                 .collect();
 
+            // Handle global presign requests
             let global_presign_checkpoint_messages = if !self
                 .agreed_global_presign_requests_queue
                 .is_empty()
@@ -747,7 +807,10 @@ impl DWalletMPCService {
                 let mut unprocessed_requests = Vec::new();
                 let mut global_presign_checkpoint_messages = Vec::new();
                 for request in self.agreed_global_presign_requests_queue.clone() {
-                    match self.epoch_store.pop_presign(request.signature_algorithm) {
+                    // Get the appropriate network key ID for this request
+                    let network_key_id = request.dwallet_network_encryption_key_id;
+
+                    match self.epoch_store.pop_presign(request.signature_algorithm, network_key_id) {
                         Ok(Some((presign_session_id, presign))) => {
                             // Check if this presign has already been used (safety check)
                             if self
@@ -924,6 +987,8 @@ impl DWalletMPCService {
                 .set(consensus_round as i64);
             tokio::task::yield_now().await;
         }
+
+        accumulated_new_key_ids
     }
 
     async fn handle_computation_results_and_submit_to_consensus(

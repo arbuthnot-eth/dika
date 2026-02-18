@@ -1,6 +1,7 @@
 // Copyright (c) dWallet Labs, Ltd.
 // SPDX-License-Identifier: BSD-3-Clause-Clear
 
+use crate::SuiDataReceivers;
 use crate::authority::authority_per_epoch_store::AuthorityPerEpochStoreTrait;
 use crate::dwallet_mpc::crytographic_computation::{
     ComputationId, ComputationRequest, CryptographicComputationsOrchestrator,
@@ -17,12 +18,11 @@ use crate::dwallet_mpc::{
     get_validators_class_groups_public_keys_and_proofs, party_id_to_authority_name,
 };
 use crate::dwallet_session_request::DWalletSessionRequest;
-use crate::{SuiDataReceivers, debug_variable_chunks};
 use dwallet_classgroups_types::ClassGroupsKeyPairAndProof;
 use dwallet_mpc_types::dwallet_mpc::{DWalletCurve, DWalletSignatureAlgorithm};
 use dwallet_rng::RootSeed;
 use fastcrypto::hash::HashFunction;
-use group::{HashScheme, PartyID};
+use group::PartyID;
 use ika_protocol_config::ProtocolConfig;
 use ika_types::committee::ClassGroupsEncryptionKeyAndProof;
 use ika_types::committee::{Committee, EpochId};
@@ -49,6 +49,8 @@ pub struct AgreedStatusUpdate {
     pub is_idle: bool,
     /// The presign session requests that reached quorum agreement.
     pub global_presign_requests: Vec<GlobalPresignRequest>,
+    /// Network key data that reached quorum agreement via weighted majority vote.
+    pub agreed_network_key_data: HashMap<ObjectID, DWalletNetworkEncryptionKeyData>,
 }
 
 /// The [`DWalletMPCManager`] manages MPC sessions:
@@ -128,6 +130,13 @@ pub(crate) struct DWalletMPCManager {
     /// When we receive our own status update back from consensus, we mark those requests as sent.
     /// This prevents sending the same request multiple times.
     sent_presign_requests: HashSet<SessionIdentifier>,
+
+    /// Per-key voting: maps each key ID to a map from data values to the set of parties that voted for that data.
+    network_key_data_votes:
+        HashMap<ObjectID, HashMap<DWalletNetworkEncryptionKeyData, HashSet<PartyID>>>,
+
+    /// Most recently consensus-agreed network key data (via inline is_authorized_subset check).
+    agreed_network_key_data: HashMap<ObjectID, DWalletNetworkEncryptionKeyData>
 }
 
 impl DWalletMPCManager {
@@ -224,6 +233,8 @@ impl DWalletMPCManager {
             completed_presign_session_identifiers: HashSet::new(),
             global_presign_requests: Vec::new(),
             sent_presign_requests: HashSet::new(),
+            network_key_data_votes: HashMap::new(),
+            agreed_network_key_data: HashMap::new()
         })
     }
 
@@ -368,6 +379,34 @@ impl DWalletMPCManager {
                     );
                 }
             }
+
+            // Vote on network key data with inline is_authorized_subset check.
+            for key_data in status_update.network_key_data {
+                let key_id = key_data.id;
+
+                // Skip if this key has already reached agreement.
+                if self.agreed_network_key_data.contains_key(&key_id) {
+                    continue;
+                }
+
+                // Add this party's vote for this specific key data.
+                let parties = self
+                    .network_key_data_votes
+                    .entry(key_id)
+                    .or_default()
+                    .entry(key_data.clone())
+                    .or_default();
+                parties.insert(sender_party_id);
+
+                // Check if the parties that voted for this data form an authorized subset.
+                if self.access_structure.is_authorized_subset(parties).is_ok() {
+                    self.agreed_network_key_data.insert(key_id, key_data);
+                    info!(
+                        ?key_id,
+                        consensus_round, "Network key data has been agreed upon"
+                    );
+                }
+            }
         }
 
         // Perform majority vote on idle status at the end of processing.
@@ -376,6 +415,7 @@ impl DWalletMPCManager {
         Some(AgreedStatusUpdate {
             is_idle: network_is_idle,
             global_presign_requests: agreed_presign_requests,
+            agreed_network_key_data: self.agreed_network_key_data.clone(),
         })
     }
 
@@ -515,7 +555,6 @@ impl DWalletMPCManager {
         }
     }
 
-    // TODO: how to do this
     fn get_supported_curve_to_signature_algorithm()
     -> Vec<(DWalletCurve, Vec<DWalletSignatureAlgorithm>)> {
         vec![
@@ -541,38 +580,71 @@ impl DWalletMPCManager {
         ]
     }
 
-    /// Instantiates internal presign sessions based on predefined logic that is
-    /// synced with the consensus and thus with the other validators.
+    /// Returns the network encryption key ID used for checkpoint signing (the oldest by DKG epoch).
+    fn checkpoint_signing_network_encryption_key_id(&self) -> Option<ObjectID> {
+        self.network_keys
+            .network_encryption_keys
+            .iter()
+            .min_by(|(_, a), (_, b)| a.dkg_at_epoch.cmp(&b.dkg_at_epoch))
+            .map(|(id, _)| *id)
+    }
+
+    /// Instantiates internal presign sessions based on consensus-agreed network key IDs.
+    /// Uses only keys that have reached quorum agreement via status update voting.
     pub(super) fn instantiate_internal_presign_sessions(
         &mut self,
         consensus_round: u64,
         number_of_consensus_rounds: u64,
         network_is_idle: bool,
     ) {
-        if let Some((dwallet_network_encryption_key_id, _)) = self
-            .network_keys
-            .network_encryption_keys
-            .iter()
-            .min_by(|(_, a), (_, b)| a.dkg_at_epoch.cmp(&b.dkg_at_epoch))
-        {
-            let dwallet_network_encryption_key_id = *dwallet_network_encryption_key_id;
+        // Check if we are ready to instantiate internal sessions, which depend on the consensus agreed (synced) network key data.
+        let agreed_checkpoint_key_id = match self.checkpoint_signing_network_encryption_key_id() {
+            Some(id) => id,
+            None => return,
+        };
+
+        let checkpoint_curve = self.protocol_config.checkpoint_signing_curve();
+        let checkpoint_algorithm = self.protocol_config.checkpoint_signing_algorithm();
+
+        let agreed_key_ids: Vec<_> = self.agreed_network_key_data.keys().copied().collect();
+        for key_id in agreed_key_ids {
             for (curve, signature_algorithms) in Self::get_supported_curve_to_signature_algorithm()
             {
                 for signature_algorithm in signature_algorithms {
-                    let current_pool_size = self.internal_presign_pool_size(
-                        dwallet_network_encryption_key_id,
-                        curve,
-                        signature_algorithm,
-                    );
-                    let minimal_pool_size = self
-                        .protocol_config
-                        .get_internal_presign_pool_minimum_size(curve, signature_algorithm);
-                    let consensus_round_delay = self
-                        .protocol_config
-                        .get_internal_presign_consensus_round_delay(curve, signature_algorithm);
-                    let sessions_to_instantiate = self
-                        .protocol_config
-                        .get_internal_presign_sessions_to_instantiate(curve, signature_algorithm);
+                    let is_checkpointing_presign = agreed_checkpoint_key_id == key_id
+                        && curve == checkpoint_curve
+                        && signature_algorithm == checkpoint_algorithm;
+
+                    let (minimal_pool_size, consensus_round_delay, sessions_to_instantiate) =
+                        if is_checkpointing_presign {
+                            (
+                                self.protocol_config.checkpoint_presign_pool_minimum_size(),
+                                self.protocol_config
+                                    .checkpoint_presign_consensus_round_delay(),
+                                self.protocol_config
+                                    .checkpoint_presign_sessions_to_instantiate(),
+                            )
+                        } else {
+                            (
+                                self.protocol_config.get_internal_presign_pool_minimum_size(
+                                    curve,
+                                    signature_algorithm,
+                                ),
+                                self.protocol_config
+                                    .get_internal_presign_consensus_round_delay(
+                                        curve,
+                                        signature_algorithm,
+                                    ),
+                                self.protocol_config
+                                    .get_internal_presign_sessions_to_instantiate(
+                                        curve,
+                                        signature_algorithm,
+                                    ),
+                            )
+                        };
+
+                    let current_pool_size =
+                        self.internal_presign_pool_size(key_id, curve, signature_algorithm);
 
                     if (number_of_consensus_rounds.is_multiple_of(consensus_round_delay)
                         && current_pool_size < minimal_pool_size)
@@ -581,7 +653,7 @@ impl DWalletMPCManager {
                         for _ in 1..=sessions_to_instantiate {
                             self.instantiate_internal_presign_session(
                                 consensus_round,
-                                dwallet_network_encryption_key_id,
+                                key_id,
                                 curve,
                                 signature_algorithm,
                             );
@@ -600,6 +672,21 @@ impl DWalletMPCManager {
         curve: DWalletCurve,
         signature_algorithm: DWalletSignatureAlgorithm,
     ) {
+        let network_dkg_output_bytes = match self
+            .network_keys
+            .get_network_encryption_key_public_data(&dwallet_network_encryption_key_id)
+        {
+            Ok(key_data) => key_data.network_dkg_output().as_bytes().to_vec(),
+            Err(e) => {
+                error!(
+                    ?dwallet_network_encryption_key_id,
+                    error = ?e,
+                    "Failed to get network encryption key data for internal presign session"
+                );
+                return;
+            }
+        };
+
         let session_sequence_number = self.next_internal_presign_sequence_number;
         let request = DWalletSessionRequest::new_internal_presign(
             self.epoch_id,
@@ -608,6 +695,7 @@ impl DWalletMPCManager {
             curve,
             signature_algorithm,
             dwallet_network_encryption_key_id,
+            &network_dkg_output_bytes,
         );
 
         let session_identifier = request.session_identifier;
@@ -648,18 +736,15 @@ impl DWalletMPCManager {
         checkpoint_sequence_number: u64,
         checkpoint_message: Vec<u8>,
     ) -> bool {
-        // Get the network encryption key ID (same as internal presign sessions)
+        // Use the consensus-agreed checkpoint key ID.
         let dwallet_network_encryption_key_id = match self
-            .network_keys
-            .network_encryption_keys
-            .iter()
-            .min_by(|(_, a), (_, b)| a.dkg_at_epoch.cmp(&b.dkg_at_epoch))
+            .checkpoint_signing_network_encryption_key_id()
         {
-            Some((key_id, _)) => *key_id,
+            Some(key_id) => key_id,
             None => {
                 warn!(
                     checkpoint_sequence_number,
-                    "No network encryption key available for internal checkpoint signing"
+                    "No consensus-agreed checkpoint key available for internal checkpoint signing"
                 );
                 return false;
             }
@@ -669,17 +754,28 @@ impl DWalletMPCManager {
         let signature_algorithm = self.protocol_config.checkpoint_signing_algorithm();
         let curve = self.protocol_config.checkpoint_signing_curve();
 
-        // Get the hash scheme for the signature algorithm
-        let hash_scheme = match signature_algorithm {
-            DWalletSignatureAlgorithm::EdDSA
-            | DWalletSignatureAlgorithm::SchnorrkelSubstrate
-            | DWalletSignatureAlgorithm::ECDSASecp256k1
-            | DWalletSignatureAlgorithm::ECDSASecp256r1
-            | DWalletSignatureAlgorithm::Taproot => HashScheme::Keccak256,
+        let hash_scheme = self.protocol_config.checkpoint_signing_hash_scheme().into();
+
+        let network_dkg_output_bytes = match self
+            .network_keys
+            .get_network_encryption_key_public_data(&dwallet_network_encryption_key_id)
+        {
+            Ok(key_data) => key_data.network_dkg_output().as_bytes().to_vec(),
+            Err(e) => {
+                error!(
+                    ?dwallet_network_encryption_key_id,
+                    checkpoint_sequence_number,
+                    error = ?e,
+                    "Failed to get network encryption key data for internal sign session"
+                );
+                return false;
+            }
         };
 
         // Try to get a presign from the internal presign pool
-        let (presign_session_id, presign) = match self.epoch_store.pop_presign(signature_algorithm)
+        let (presign_session_id, presign) = match self
+            .epoch_store
+            .pop_presign(signature_algorithm, dwallet_network_encryption_key_id)
         {
             Ok(Some((session_id, presign))) => (session_id, presign),
             Ok(None) => {
@@ -733,6 +829,7 @@ impl DWalletMPCManager {
             signature_algorithm,
             hash_scheme,
             dwallet_network_encryption_key_id,
+            &network_dkg_output_bytes,
             checkpoint_message.clone(),
             presign,
         );
@@ -759,17 +856,62 @@ impl DWalletMPCManager {
 
     fn internal_presign_pool_size(
         &self,
-        _dwallet_network_encryption_key_id: ObjectID,
+        dwallet_network_encryption_key_id: ObjectID,
         _curve: DWalletCurve,
         signature_algorithm: DWalletSignatureAlgorithm,
     ) -> u64 {
-        // todo: use dwallet_network_encryption_key_id
         self.epoch_store
-            .presign_pool_size(signature_algorithm)
+            .presign_pool_size(signature_algorithm, dwallet_network_encryption_key_id)
             .unwrap_or_else(|e| {
                 error!(error=?e, ?signature_algorithm, "Failed to get presign pool size");
                 0
             })
+    }
+
+    /// Handles an external presign request by assigning a presign from the internal pool
+    /// to the assigned pool. Returns the session identifier if successful.
+    pub fn handle_external_presign_request(
+        &mut self,
+        signature_algorithm: DWalletSignatureAlgorithm,
+        dwallet_network_encryption_key_id: ObjectID,
+        user_verification_key: Option<Vec<u8>>,
+        dwallet_id: Option<ObjectID>,
+    ) -> Option<SessionIdentifier> {
+        // Assign the presign from internal pool to assigned pool
+        match self.epoch_store.assign_presign(
+            signature_algorithm,
+            dwallet_network_encryption_key_id,
+            user_verification_key,
+            dwallet_id,
+            self.epoch_id,
+        ) {
+            Ok(Some(session_id)) => {
+                info!(
+                    ?session_id,
+                    ?signature_algorithm,
+                    ?dwallet_network_encryption_key_id,
+                    "Successfully assigned presign to external request"
+                );
+                Some(session_id)
+            }
+            Ok(None) => {
+                warn!(
+                    ?signature_algorithm,
+                    ?dwallet_network_encryption_key_id,
+                    "No presign available in internal pool for external request"
+                );
+                None
+            }
+            Err(e) => {
+                error!(
+                    error=?e,
+                    ?signature_algorithm,
+                    ?dwallet_network_encryption_key_id,
+                    "Failed to assign presign for external request"
+                );
+                None
+            }
+        }
     }
 
     /// Creates a new session with SID `session_identifier`,
@@ -970,95 +1112,71 @@ impl DWalletMPCManager {
         false
     }
 
-    pub(crate) async fn maybe_update_network_keys(&mut self) -> Vec<ObjectID> {
-        match self.sui_data_receivers.network_keys_receiver.has_changed() {
-            Ok(has_changed) => {
-                if has_changed {
-                    let new_keys = self.borrow_and_update_network_keys();
+    /// Instantiates agreed network keys from consensus-voted data.
+    /// For each key in `agreed_network_key_data` that is not yet loaded locally,
+    /// instantiates the key from the consensus-voted data.
+    /// Returns the IDs of newly instantiated keys.
+    pub(crate) async fn instantiate_agreed_keys_from_voted_data(&mut self) -> Vec<ObjectID> {
+        let keys_to_instantiate: Vec<(ObjectID, DWalletNetworkEncryptionKeyData)> = self
+            .agreed_network_key_data
+            .iter()
+            .filter(|(key_id, _)| {
+                !self
+                    .network_keys
+                    .network_encryption_keys
+                    .contains_key(key_id)
+            })
+            .map(|(key_id, key_data)| (*key_id, key_data.clone()))
+            .collect();
 
-                    let mut results = vec![];
-                    for (key_id, key_data) in new_keys {
-                        info!(key_id=?key_id, "Instantiating network key");
-                        if let Ok(key_data_bcs) = bcs::to_bytes(&key_data) {
-                            debug_variable_chunks(
-                                format!("Instantiating network key {:?}", key_id).as_str(),
-                                "key_data",
-                                &key_data_bcs,
-                            );
-                        }
+        let mut new_key_ids = Vec::new();
 
-                        let res = instantiate_dwallet_mpc_network_encryption_key_public_data_from_public_output(
-                            key_data.current_epoch,
-                            self.access_structure.clone(),
-                            key_data,
-                            self.protocol_config.checkpoint_signing_curve(),
-                            self.protocol_config.checkpoint_signing_algorithm(),
-                            self.party_id,
-                        ).await;
+        for (key_id, key_data) in keys_to_instantiate {
+            info!(key_id=?key_id, "Instantiating agreed network key from consensus-voted data");
 
-                        results.push((key_id, res))
+            let res =
+                instantiate_dwallet_mpc_network_encryption_key_public_data_from_public_output(
+                    key_data.current_epoch,
+                    self.access_structure.clone(),
+                    key_data,
+                    self.protocol_config.checkpoint_signing_curve(),
+                    self.protocol_config.checkpoint_signing_algorithm(),
+                    self.party_id,
+                )
+                .await;
+
+            match res {
+                Ok(key) => {
+                    if key.epoch() != self.epoch_id {
+                        info!(
+                            key_id=?key_id,
+                            epoch=?key.epoch(),
+                            "Consensus-voted network key epoch does not match current epoch, ignoring"
+                        );
+                        continue;
                     }
-
-                    let mut new_key_ids = vec![];
-                    for (key_id, res) in results {
-                        match res {
-                            Ok(key) => {
-                                if key.epoch() != self.epoch_id {
-                                    info!(
-                                        key_id=?key_id,
-                                        epoch=?key.epoch(),
-                                        "Network key epoch does not match current epoch, ignoring"
-                                    );
-
-                                    continue;
-                                }
-                                info!(key_id=?key_id, "Updating (decrypting new shares) network key for key_id");
-                                if let Err(e) = self
-                                    .network_keys
-                                    .update_network_key(key_id, &key, &self.access_structure)
-                                    .await
-                                {
-                                    error!(error=?e, key_id=?key_id, "failed to update the network key");
-                                } else {
-                                    new_key_ids.push(key_id);
-                                }
-                            }
-                            Err(err) => {
-                                error!(
-                                    error=?err,
-                                    key_id=?key_id,
-                                    "failed to instantiate network decryption key shares from public output for"
-                                );
-                            }
-                        }
+                    info!(key_id=?key_id, "Updating network key from consensus-voted data");
+                    if let Err(e) = self
+                        .network_keys
+                        .update_network_key(key_id, &key, &self.access_structure)
+                        .await
+                    {
+                        error!(error=?e, key_id=?key_id, "Failed to update network key from consensus-voted data");
+                    } else {
+                        new_key_ids.push(key_id);
                     }
-
-                    new_key_ids
-                } else {
-                    vec![]
+                }
+                Err(err) => {
+                    error!(
+                        error=?err,
+                        key_id=?key_id,
+                        "Failed to instantiate network key from consensus-voted data"
+                    );
                 }
             }
-            Err(err) => {
-                error!(error=?err, "failed to check network keys receiver");
-
-                vec![]
-            }
         }
-    }
 
-    // This has to be a function to solve compilation errors with async.
-    fn borrow_and_update_network_keys(
-        &mut self,
-    ) -> HashMap<ObjectID, DWalletNetworkEncryptionKeyData> {
-        let new_keys = self
-            .sui_data_receivers
-            .network_keys_receiver
-            .borrow_and_update();
-
-        new_keys
-            .iter()
-            .map(|(&key_id, key_data)| (key_id, key_data.clone()))
-            .collect()
+        new_key_ids
     }
 
     pub(crate) fn handle_output(
