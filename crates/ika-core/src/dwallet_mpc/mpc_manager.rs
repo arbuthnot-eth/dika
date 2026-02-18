@@ -51,8 +51,6 @@ pub struct AgreedStatusUpdate {
     pub global_presign_requests: Vec<GlobalPresignRequest>,
     /// Network key data that reached quorum agreement via weighted majority vote.
     pub agreed_network_key_data: HashMap<ObjectID, DWalletNetworkEncryptionKeyData>,
-    /// Checkpoint key ID deterministically computed as the agreed key with the lowest `dkg_at_epoch`.
-    pub agreed_checkpoint_key_id: Option<ObjectID>,
 }
 
 /// The [`DWalletMPCManager`] manages MPC sessions:
@@ -415,7 +413,6 @@ impl DWalletMPCManager {
             is_idle: network_is_idle,
             global_presign_requests: agreed_presign_requests,
             agreed_network_key_data: self.agreed_network_key_data.clone(),
-            agreed_checkpoint_key_id: self.checkpoint_key_id(),
         })
     }
 
