@@ -27,7 +27,7 @@ use crate::request_protocol_data::ProtocolData;
 use dwallet_classgroups_types::ClassGroupsKeyPairAndProof;
 use dwallet_mpc_types::dwallet_mpc::MPCDataTrait;
 use dwallet_mpc_types::dwallet_mpc::{DWalletCurve, MPCMessage};
-#[cfg(feature = "test-utils")]
+#[cfg(test)]
 use dwallet_rng::RootSeed;
 use fastcrypto::traits::KeyPair;
 use ika_config::NodeConfig;
@@ -50,14 +50,14 @@ use ika_types::sui::EpochStartSystem;
 use ika_types::sui::{EpochStartSystemTrait, EpochStartValidatorInfoTrait};
 use itertools::Itertools;
 use mpc::GuaranteedOutputDeliveryRoundResult;
-#[cfg(feature = "test-utils")]
+#[cfg(test)]
 use prometheus::Registry;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use sui_types::base_types::ObjectID;
 use sui_types::messages_consensus::Round;
-#[cfg(feature = "test-utils")]
+#[cfg(test)]
 use tokio::sync::watch;
 use tokio::sync::watch::Receiver;
 use tracing::{debug, error, info, warn};
@@ -160,7 +160,7 @@ impl DWalletMPCService {
         }
     }
 
-    #[cfg(feature = "test-utils")]
+    #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn new_for_testing(
         epoch_store: Arc<dyn AuthorityPerEpochStoreTrait>,
@@ -206,13 +206,13 @@ impl DWalletMPCService {
         }
     }
 
-    #[cfg(feature = "test-utils")]
+    #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn dwallet_mpc_manager(&self) -> &DWalletMPCManager {
         &self.dwallet_mpc_manager
     }
 
-    #[cfg(feature = "test-utils")]
+    #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn dwallet_mpc_manager_mut(&mut self) -> &mut DWalletMPCManager {
         &mut self.dwallet_mpc_manager
@@ -772,7 +772,7 @@ impl DWalletMPCService {
 
             let Some(session) = self.dwallet_mpc_manager.sessions.get(&session_identifier) else {
                 error!(
-                    should_never_happen =? true,
+                    should_never_happen=true,
                     ?session_identifier,
                     validator=?validator_name,
                     ?computation_result_data,
