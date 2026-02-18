@@ -43,7 +43,8 @@ use ika_types::message::{
 };
 use ika_types::messages_consensus::ConsensusTransaction;
 use ika_types::messages_dwallet_mpc::{
-    InternalSessionsStatusUpdate, SessionIdentifier, UserSecretKeyShareEventType,
+    DWalletNetworkEncryptionKeyState, InternalSessionsStatusUpdate, SessionIdentifier,
+    UserSecretKeyShareEventType,
 };
 use ika_types::sui::EpochStartSystem;
 use ika_types::sui::{EpochStartSystemTrait, EpochStartValidatorInfoTrait};
@@ -330,11 +331,19 @@ impl DWalletMPCService {
         // Only include presign requests that haven't been sent yet.
         let unsent_presign_requests = self.dwallet_mpc_manager.get_unsent_presign_requests();
 
-        // Read raw key data from the Sui watch channel and filter to keys not yet sent.
+        // Read raw key data from the Sui watch channel and filter to keys not yet sent
+        // and only in completed states (with actual usable data).
         let all_key_data = self.sui_data_requests.network_keys_receiver.borrow();
         let new_key_data: Vec<_> = all_key_data
             .values()
             .filter(|data| !self.sent_network_key_ids.contains(&data.id))
+            .filter(|data| {
+                matches!(
+                    data.state,
+                    DWalletNetworkEncryptionKeyState::NetworkDKGCompleted
+                        | DWalletNetworkEncryptionKeyState::NetworkReconfigurationCompleted
+                )
+            })
             .cloned()
             .collect();
         drop(all_key_data);

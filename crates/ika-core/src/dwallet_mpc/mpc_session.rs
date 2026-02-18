@@ -367,24 +367,16 @@ impl DWalletMPCManager {
             }
         }
 
-        // First, try to update the network keys.
-        let newly_updated_network_keys_ids = self.maybe_update_network_keys().await;
-
-        // Now handle events for which we've just received the corresponding public data.
-        // Since events are only queued in `events_pending_for_network_key` in `handle_mpc_request()` calls from this function,
-        // receiving the network key ensures no further events will be pending for that key.
-        // Therefore, it's safe to process them now, as the queue will remain empty afterward.
-        for key_id in newly_updated_network_keys_ids {
-            let events_pending_for_newly_updated_network_key = self
+        // Handle events that were waiting for newly-instantiated network keys
+        // (from consensus-voted data instantiated in the previous service loop iteration).
+        let newly_instantiated_key_ids = mem::take(&mut self.newly_instantiated_network_key_ids);
+        for key_id in newly_instantiated_key_ids {
+            let pending_requests = self
                 .requests_pending_for_network_key
                 .remove(&key_id)
                 .unwrap_or_default();
 
-            for request in events_pending_for_newly_updated_network_key {
-                // We know this won't fail on a missing network key,
-                // but it could be waiting for the next committee,
-                // in which case it would be added to that queue,
-                // and handled in a subsequent call to this function.
+            for request in pending_requests {
                 if Some(SessionStatus::Failed) == self.handle_mpc_request(request.clone()) {
                     failed_sessions_waiting_to_send_reject.push(request.clone());
                 }
