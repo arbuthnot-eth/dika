@@ -10,6 +10,7 @@ use ika_types::message::DWalletCheckpointMessageKind;
 use ika_types::messages_dwallet_mpc::{DWalletMPCMessage, DWalletMPCOutput, SessionIdentifier};
 use std::collections::HashMap;
 use std::collections::hash_map::Entry::Vacant;
+use sui_types::base_types::ObjectID;
 use tracing::{debug, error, info, warn};
 
 use crate::dwallet_mpc::dwallet_mpc_service::DWalletMPCService;
@@ -348,6 +349,7 @@ impl DWalletMPCManager {
     pub(crate) async fn handle_mpc_request_batch(
         &mut self,
         requests: Vec<DWalletSessionRequest>,
+        newly_instantiated_network_key_ids: Vec<ObjectID>,
     ) -> Vec<DWalletSessionRequest> {
         // We only update `next_active_committee` in this block. Once it's set,
         // there will no longer be any pending events targeting it for this epoch.
@@ -367,16 +369,21 @@ impl DWalletMPCManager {
             }
         }
 
-        // Handle events that were waiting for newly-instantiated network keys
-        // (from consensus-voted data instantiated in the previous service loop iteration).
-        let newly_instantiated_key_ids = mem::take(&mut self.newly_instantiated_network_key_ids);
-        for key_id in newly_instantiated_key_ids {
-            let pending_requests = self
+        // Now handle events for which we've just received the corresponding public data.
+        // Since events are only queued in `events_pending_for_network_key` in `handle_mpc_request()` calls from this function,
+        // receiving the network key ensures no further events will be pending for that key.
+        // Therefore, it's safe to process them now, as the queue will remain empty afterward.
+        for key_id in newly_instantiated_network_key_ids {
+            let events_pending_for_newly_updated_network_key = self
                 .requests_pending_for_network_key
                 .remove(&key_id)
                 .unwrap_or_default();
 
-            for request in pending_requests {
+            for request in events_pending_for_newly_updated_network_key {
+                // We know this won't fail on a missing network key,
+                // but it could be waiting for the next committee,
+                // in which case it would be added to that queue,
+                // and handled in a subsequent call to this function.
                 if Some(SessionStatus::Failed) == self.handle_mpc_request(request.clone()) {
                     failed_sessions_waiting_to_send_reject.push(request.clone());
                 }

@@ -128,10 +128,6 @@ pub(crate) struct DWalletMPCManager {
     /// Most recently consensus-agreed network key data (via inline is_authorized_subset check).
     agreed_network_key_data: HashMap<ObjectID, DWalletNetworkEncryptionKeyData>,
 
-    /// Key IDs that were newly instantiated from consensus-voted data.
-    /// Drained by `handle_mpc_request_batch` to process pending requests.
-    pub(crate) newly_instantiated_network_key_ids: Vec<ObjectID>,
-
     // The sequence number of the next internal presign session.
     // Starts from 1 in every epoch, and increases as they are spawned.
     // Different epochs will see repeating values of this variable,
@@ -237,7 +233,6 @@ impl DWalletMPCManager {
             sent_presign_requests: HashSet::new(),
             network_key_data_votes: HashMap::new(),
             agreed_network_key_data: HashMap::new(),
-            newly_instantiated_network_key_ids: Vec::new(),
             next_internal_presign_sequence_number: 1,
             epoch_store,
         })
@@ -1134,9 +1129,8 @@ impl DWalletMPCManager {
     /// Instantiates agreed network keys from consensus-voted data.
     /// For each key in `agreed_network_key_data` that is not yet loaded locally,
     /// instantiates the key from the consensus-voted data.
-    /// Newly instantiated key IDs are accumulated in `self.newly_instantiated_network_key_ids`
-    /// and drained by `handle_mpc_request_batch` to process pending requests.
-    pub(crate) async fn instantiate_agreed_keys_from_voted_data(&mut self) {
+    /// Returns the IDs of newly instantiated keys.
+    pub(crate) async fn instantiate_agreed_keys_from_voted_data(&mut self) -> Vec<ObjectID> {
         let keys_to_instantiate: Vec<(ObjectID, DWalletNetworkEncryptionKeyData)> = self
             .agreed_network_key_data
             .iter()
@@ -1148,6 +1142,8 @@ impl DWalletMPCManager {
             })
             .map(|(key_id, key_data)| (*key_id, key_data.clone()))
             .collect();
+
+        let mut new_key_ids = Vec::new();
 
         for (key_id, key_data) in keys_to_instantiate {
             info!(key_id=?key_id, "Instantiating agreed network key from consensus-voted data");
@@ -1181,7 +1177,7 @@ impl DWalletMPCManager {
                     {
                         error!(error=?e, key_id=?key_id, "Failed to update network key from consensus-voted data");
                     } else {
-                        self.newly_instantiated_network_key_ids.push(key_id);
+                        new_key_ids.push(key_id);
                     }
                 }
                 Err(err) => {
@@ -1193,6 +1189,8 @@ impl DWalletMPCManager {
                 }
             }
         }
+
+        new_key_ids
     }
 
     pub(crate) fn handle_output(
