@@ -127,9 +127,6 @@ pub(crate) struct DWalletMPCManager {
     network_key_data_votes:
         HashMap<ObjectID, HashMap<DWalletNetworkEncryptionKeyData, HashSet<PartyID>>>,
 
-    /// Key IDs that have already reached agreement. Once agreed, skip further tallying.
-    agreed_network_key_ids: HashSet<ObjectID>,
-
     /// Most recently consensus-agreed network key data (via inline is_authorized_subset check).
     agreed_network_key_data: HashMap<ObjectID, DWalletNetworkEncryptionKeyData>,
 
@@ -241,7 +238,6 @@ impl DWalletMPCManager {
             global_presign_requests: Vec::new(),
             sent_presign_requests: HashSet::new(),
             network_key_data_votes: HashMap::new(),
-            agreed_network_key_ids: HashSet::new(),
             agreed_network_key_data: HashMap::new(),
             agreed_checkpoint_key_id: None,
             next_internal_presign_sequence_number: 1,
@@ -393,7 +389,7 @@ impl DWalletMPCManager {
                 let key_id = key_data.id;
 
                 // Skip if this key has already reached agreement.
-                if self.agreed_network_key_ids.contains(&key_id) {
+                if self.agreed_network_key_data.contains_key(&key_id) {
                     continue;
                 }
 
@@ -408,7 +404,6 @@ impl DWalletMPCManager {
 
                 // Check if the parties that voted for this data form an authorized subset.
                 if self.access_structure.is_authorized_subset(parties).is_ok() {
-                    self.agreed_network_key_ids.insert(key_id);
                     self.agreed_network_key_data.insert(key_id, key_data);
                     info!(
                         ?key_id,
