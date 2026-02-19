@@ -136,7 +136,7 @@ pub(crate) struct DWalletMPCManager {
         HashMap<ObjectID, HashMap<DWalletNetworkEncryptionKeyData, HashSet<PartyID>>>,
 
     /// Most recently consensus-agreed network key data (via inline is_authorized_subset check).
-    agreed_network_key_data: HashMap<ObjectID, DWalletNetworkEncryptionKeyData>
+    agreed_network_key_data: HashMap<ObjectID, DWalletNetworkEncryptionKeyData>,
 }
 
 impl DWalletMPCManager {
@@ -234,7 +234,7 @@ impl DWalletMPCManager {
             global_presign_requests: Vec::new(),
             sent_presign_requests: HashSet::new(),
             network_key_data_votes: HashMap::new(),
-            agreed_network_key_data: HashMap::new()
+            agreed_network_key_data: HashMap::new(),
         })
     }
 

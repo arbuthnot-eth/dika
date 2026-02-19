@@ -46,8 +46,7 @@ use ika_types::messages_consensus::ConsensusTransaction;
 use ika_types::messages_dwallet_mpc::{
     DWalletInternalMPCOutputKind, DWalletMPCOutputKind, DWalletMPCOutputReport,
     DWalletNetworkEncryptionKeyState, GlobalPresignRequest, InternalSessionsStatusUpdate,
-    SessionIdentifier, SessionType,
-    UserSecretKeyShareEventType,
+    SessionIdentifier, SessionType, UserSecretKeyShareEventType,
 };
 use ika_types::sui::EpochStartSystem;
 use ika_types::sui::{EpochStartSystemTrait, EpochStartValidatorInfoTrait};
@@ -398,12 +397,7 @@ impl DWalletMPCService {
             all_key_data
                 .values()
                 .filter(|data| !self.sent_network_key_ids.contains(&data.id))
-                .filter(|data| {
-                    !matches!(
-                        data.state,
-                        AwaitingNetworkDKG
-                    )
-                })
+                .filter(|data| !matches!(data.state, AwaitingNetworkDKG))
                 .cloned()
                 .collect()
         };
@@ -806,80 +800,87 @@ impl DWalletMPCService {
                 let mut unprocessed_requests = Vec::new();
                 let mut global_presign_checkpoint_messages = Vec::new();
                 for request in self.agreed_global_presign_requests_queue.clone() {
-                    // Get the appropriate network key ID for this request
-                    let network_key_id = request.dwallet_network_encryption_key_id;
+                    // Use handle_external_presign_request to assign presign from internal to assigned pool
+                    match self.dwallet_mpc_manager.handle_external_presign_request(
+                        request.signature_algorithm,
+                        request.dwallet_network_encryption_key_id,
+                        None,
+                        None,
+                    ) {
+                        Some(presign_session_id) => {
+                            // Get the assigned presign data (but don't remove it from assigned pool yet)
+                            match self.epoch_store.get_assigned_presign(
+                                request.signature_algorithm,
+                                presign_session_id,
+                            ) {
+                                Ok(Some(assigned_presign)) => {
+                                    self.processed_global_presign_requests_session_identifiers
+                                        .insert(request.session_identifier);
 
-                    match self.epoch_store.pop_presign(request.signature_algorithm, network_key_id) {
-                        Ok(Some((presign_session_id, presign))) => {
-                            // Check if this presign has already been used (safety check)
-                            if self
-                                .epoch_store
-                                .is_presign_used(presign_session_id)
-                                .unwrap_or(false)
-                            {
-                                error!(
-                                    ?presign_session_id,
-                                    presign_id = ?request.presign_id,
-                                    "Presign has already been used - this should not happen"
-                                );
-                                unprocessed_requests.push(request);
-                                continue;
-                            }
+                                    match bcs::to_bytes(&VersionedPresignOutput::V2(
+                                        assigned_presign.presign,
+                                    )) {
+                                        Ok(presign) => {
+                                            info!(
+                                                presign_session_id =? presign_session_id,
+                                                request_session_id =? request.session_identifier,
+                                                presign_id =? request.presign_id,
+                                                session_sequence_number =? request.session_sequence_number,
+                                                "assigned presign from internal pool for global presign request"
+                                            );
 
-                            // Mark the presign as used to prevent double-spending
-                            if let Err(e) =
-                                self.epoch_store.mark_presign_as_used(presign_session_id)
-                            {
-                                error!(
-                                    ?presign_session_id,
-                                    error = ?e,
-                                    "Failed to mark presign as used"
-                                );
-                                unprocessed_requests.push(request);
-                                continue;
-                            }
+                                            // Serialize the SessionIdentifier for inclusion in the output
+                                            let presign_session_identifier = bcs::to_bytes(&presign_session_id)
+                                                .unwrap_or_else(|e| {
+                                                    error!(error=?e, "Failed to serialize session identifier");
+                                                    Vec::new()
+                                                });
 
-                            self.processed_global_presign_requests_session_identifiers
-                                .insert(request.session_identifier);
+                                            let checkpoint_message =
+                                                DWalletCheckpointMessageKind::RespondDWalletPresign(
+                                                    PresignOutput {
+                                                        presign,
+                                                        dwallet_id: None,
+                                                        presign_id: request.presign_id.to_vec(),
+                                                        rejected: false,
+                                                        session_sequence_number: request
+                                                            .session_sequence_number,
+                                                        presign_session_identifier,
+                                                    },
+                                                );
 
-                            match bcs::to_bytes(&VersionedPresignOutput::V2(presign)) {
-                                Ok(presign) => {
-                                    info!(presign_session_id =? request.session_identifier, presign_id =? request.presign_id, session_sequence_number =? request
-                                                        .session_sequence_number, "using presign from internal presign pool for global presign request");
-
-                                    let checkpoint_message =
-                                        DWalletCheckpointMessageKind::RespondDWalletPresign(
-                                            PresignOutput {
-                                                presign,
-                                                dwallet_id: None,
-                                                presign_id: request.presign_id.to_vec(),
-                                                rejected: false,
-                                                session_sequence_number: request
-                                                    .session_sequence_number,
-                                            },
-                                        );
-
-                                    global_presign_checkpoint_messages.push(checkpoint_message);
+                                            global_presign_checkpoint_messages
+                                                .push(checkpoint_message);
+                                        }
+                                        Err(e) => {
+                                            error!(
+                                                error=?e,
+                                                should_never_happen =? true,
+                                                "failed to serialize presign output"
+                                            );
+                                            unprocessed_requests.push(request);
+                                        }
+                                    }
+                                }
+                                Ok(None) => {
+                                    error!(
+                                        ?presign_session_id,
+                                        "Presign was assigned but not found in assigned pool"
+                                    );
+                                    unprocessed_requests.push(request);
                                 }
                                 Err(e) => {
                                     error!(
                                         error=?e,
-                                        should_never_happen =? true,
-                                        "failed to serialize presign output"
+                                        ?presign_session_id,
+                                        "Failed to get assigned presign"
                                     );
+                                    unprocessed_requests.push(request);
                                 }
                             }
                         }
-                        Ok(None) => {
-                            unprocessed_requests.push(request);
-                        }
-                        Err(e) => {
-                            error!(
-                                error=?e,
-                                last_read_consensus_round=self.last_read_consensus_round,
-                                "failed to pop presign from DB"
-                            );
-
+                        None => {
+                            // No presign available in internal pool
                             unprocessed_requests.push(request);
                         }
                     }
@@ -1370,6 +1371,7 @@ impl DWalletMPCService {
                     presign_id: presign_id.to_vec(),
                     rejected,
                     session_sequence_number: session_request.session_sequence_number,
+                    presign_session_identifier: Vec::new(), // Non-global presign
                 });
 
                 vec![tx]

@@ -719,6 +719,8 @@ public enum PresignState has copy, drop, store {
     Completed {
         /// Precomputed cryptographic material for accelerated signing
         presign: vector<u8>,
+        /// Serialized SessionIdentifier for the assigned presign
+        presign_session_identifier: vector<u8>,
     },
 }
 
@@ -1571,6 +1573,8 @@ public struct SignRequestEvent has copy, drop, store {
     message_centralized_signature: vector<u8>,
     /// Whether this uses future sign capabilities
     is_future_sign: bool,
+    /// Serialized SessionIdentifier for the assigned presign
+    presign_session_identifier: vector<u8>,
 }
 
 /// Event emitted when signature generation completes successfully.
@@ -2606,9 +2610,9 @@ public(package) fun sign_during_dkg_request(
         signature_algorithm,
     } = presign;
 
-    let presign = match (state) {
-        PresignState::Completed { presign } => {
-            presign
+    let (presign, _presign_session_identifier) = match (state) {
+        PresignState::Completed { presign, presign_session_identifier } => {
+            (presign, presign_session_identifier)
         },
         _ => abort EInvalidPresign,
     };
@@ -3795,6 +3799,7 @@ public(package) fun respond_presign(
     presign: vector<u8>,
     rejected: bool,
     session_sequence_number: u64,
+    presign_session_identifier: vector<u8>,
 ): Balance<SUI> {
     let status = if (rejected) {
         sessions_manager::create_rejected_status_event(RejectedPresignEvent {
@@ -3827,6 +3832,7 @@ public(package) fun respond_presign(
                 } else {
                     PresignState::Completed {
                         presign,
+                        presign_session_identifier,
                     }
                 }
             },
@@ -3947,9 +3953,9 @@ fun validate_and_initiate_sign(
         signature_algorithm: presign_signature_algorithm,
     } = presign;
 
-    let presign = match (state) {
-        PresignState::Completed { presign } => {
-            presign
+    let (presign, presign_session_identifier) = match (state) {
+        PresignState::Completed { presign, presign_session_identifier } => {
+            (presign, presign_session_identifier)
         },
         _ => abort EInvalidPresign,
     };
@@ -4018,6 +4024,7 @@ fun validate_and_initiate_sign(
                 presign,
                 message_centralized_signature,
                 is_future_sign,
+                presign_session_identifier,
             },
             ctx,
         );
@@ -4196,9 +4203,9 @@ public(package) fun request_future_sign(
         );
     };
 
-    let presign = match (presign_obj.state) {
-        PresignState::Completed { presign } => {
-            presign
+    let (presign, _presign_session_identifier) = match (presign_obj.state) {
+        PresignState::Completed { presign, presign_session_identifier } => {
+            (presign, presign_session_identifier)
         },
         _ => abort EInvalidPresign,
     };
@@ -4785,12 +4792,14 @@ fun process_checkpoint_message(
                 let presign = bcs_body.peel_vec_u8();
                 let rejected = bcs_body.peel_bool();
                 let session_sequence_number = bcs_body.peel_u64();
+                let presign_session_identifier = bcs_body.peel_vec_u8();
                 let gas_fee_reimbursement_sui = self.respond_presign(
                     dwallet_id,
                     presign_id,
                     presign,
                     rejected,
                     session_sequence_number,
+                    presign_session_identifier,
                 );
                 total_gas_fee_reimbursement_sui.join(gas_fee_reimbursement_sui);
             },

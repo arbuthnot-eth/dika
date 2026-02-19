@@ -17,8 +17,8 @@ use ika_types::message::DWalletCheckpointMessageKind;
 use ika_types::messages_consensus::{ConsensusTransaction, ConsensusTransactionKind};
 use ika_types::messages_dwallet_checkpoint::DWalletCheckpointSignatureMessage;
 use ika_types::messages_dwallet_mpc::{
-    DWalletInternalMPCOutput, DWalletMPCMessage, DWalletMPCOutput, InternalSessionsStatusUpdate,
-    SessionIdentifier, SessionType, UserSecretKeyShareEventType,
+    AssignedPresign, DWalletInternalMPCOutput, DWalletMPCMessage, DWalletMPCOutput,
+    InternalSessionsStatusUpdate, SessionIdentifier, SessionType, UserSecretKeyShareEventType,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -196,6 +196,33 @@ impl AuthorityPerEpochStoreTrait for TestingAuthorityPerEpochStore {
         &self,
         _last_consensus_round: Option<Round>,
     ) -> IkaResult<Option<(Round, Vec<InternalSessionsStatusUpdate>)>> {
+        Ok(None)
+    }
+
+    fn assign_presign(
+        &self,
+        _signature_algorithm: DWalletSignatureAlgorithm,
+        _dwallet_network_encryption_key_id: ObjectID,
+        _user_verification_key: Option<Vec<u8>>,
+        _dwallet_id: Option<ObjectID>,
+        _current_epoch: u64,
+    ) -> IkaResult<Option<SessionIdentifier>> {
+        Ok(None)
+    }
+
+    fn get_assigned_presign(
+        &self,
+        _signature_algorithm: DWalletSignatureAlgorithm,
+        _session_identifier: SessionIdentifier,
+    ) -> IkaResult<Option<AssignedPresign>> {
+        Ok(None)
+    }
+
+    fn pop_assigned_presign(
+        &self,
+        _signature_algorithm: DWalletSignatureAlgorithm,
+        _session_identifier: SessionIdentifier,
+    ) -> IkaResult<Option<AssignedPresign>> {
         Ok(None)
     }
 }

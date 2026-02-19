@@ -960,6 +960,9 @@ pub struct SignRequestEvent {
     /// User's signature over the message and presign session ID, proving authorization to use this presign.
     /// TODO: Placeholder - will be populated when user verification is implemented.
     pub user_signature: Option<Vec<u8>>,
+
+    /// Serialized SessionIdentifier for the assigned presign
+    pub presign_session_identifier: Vec<u8>,
 }
 
 impl DWalletSessionEventTrait for SignRequestEvent {

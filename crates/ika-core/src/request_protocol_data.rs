@@ -174,6 +174,7 @@ pub enum ProtocolData {
         message: Vec<u8>,
         presign: SerializedWrappedMPCPublicOutput,
         message_centralized_signature: SerializedWrappedMPCPublicOutput,
+        presign_session_identifier: Vec<u8>,
     },
 
     InternalSign {
@@ -211,7 +212,9 @@ pub enum ProtocolData {
 impl ProtocolData {
     /// Returns `None` if this request is not a global presign one (either not a presign, or a targeted presign),
     /// and `Some((presign_id, curve, signature_algorithm, network_key_id))` if it is.
-    pub fn is_global_presign(&self) -> Option<(ObjectID, DWalletCurve, DWalletSignatureAlgorithm, ObjectID)> {
+    pub fn is_global_presign(
+        &self,
+    ) -> Option<(ObjectID, DWalletCurve, DWalletSignatureAlgorithm, ObjectID)> {
         match self {
             ProtocolData::Presign {
                 data,
@@ -229,7 +232,12 @@ impl ProtocolData {
                 };
 
                 if is_global_presign {
-                    Some((*presign_id, data.curve, data.signature_algorithm, *dwallet_network_encryption_key_id))
+                    Some((
+                        *presign_id,
+                        data.curve,
+                        data.signature_algorithm,
+                        *dwallet_network_encryption_key_id,
+                    ))
                 } else {
                     None
                 }
@@ -393,6 +401,7 @@ pub fn sign_protocol_data(request_event_data: SignRequestEvent) -> DwalletMPCRes
         message: request_event_data.message,
         presign: request_event_data.presign,
         message_centralized_signature: request_event_data.message_centralized_signature,
+        presign_session_identifier: request_event_data.presign_session_identifier,
     })
 }
 
