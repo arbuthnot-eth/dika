@@ -1250,6 +1250,7 @@ impl DWalletMPCService {
                             curve: data.curve,
                             signature_algorithm: data.signature_algorithm,
                             hash_scheme: data.hash_scheme,
+                            checkpoint_sequence_number: session_request.session_sequence_number,
                         },
                         malicious_authorities,
                     ))

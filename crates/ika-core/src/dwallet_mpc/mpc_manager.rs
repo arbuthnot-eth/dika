@@ -1325,16 +1325,28 @@ impl DWalletMPCManager {
                 curve,
                 signature_algorithm,
                 hash_scheme: _,
+                checkpoint_sequence_number,
             } => {
-                // Log the internal sign output for checkpoint signing.
-                // This signature will eventually replace BLS checkpoint signatures.
-                info!(
-                    curve = ?curve,
-                    signature_algorithm = ?signature_algorithm,
-                    signature_length = output.len(),
-                    signature_hex = %hex::encode(&output),
-                    "Internal checkpoint sign completed - MPC signature ready"
-                );
+                // Store the MPC signature for this checkpoint
+                if let Err(e) = self
+                    .epoch_store
+                    .store_mpc_checkpoint_signature(checkpoint_sequence_number, output.clone())
+                {
+                    error!(
+                        checkpoint_sequence_number,
+                        error = ?e,
+                        "Failed to store MPC checkpoint signature"
+                    );
+                } else {
+                    info!(
+                        checkpoint_sequence_number,
+                        curve = ?curve,
+                        signature_algorithm = ?signature_algorithm,
+                        signature_length = output.len(),
+                        signature_hex = %hex::encode(&output),
+                        "Internal checkpoint sign completed - MPC signature stored"
+                    );
+                }
             }
         }
     }

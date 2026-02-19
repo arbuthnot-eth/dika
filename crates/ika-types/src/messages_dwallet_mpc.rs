@@ -91,6 +91,7 @@ pub enum DWalletInternalMPCOutputKind {
         curve: DWalletCurve,
         signature_algorithm: DWalletSignatureAlgorithm,
         hash_scheme: HashScheme,
+        checkpoint_sequence_number: u64,
     },
 }
 
