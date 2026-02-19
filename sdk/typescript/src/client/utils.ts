@@ -1,7 +1,7 @@
 // Copyright (c) dWallet Labs, Ltd.
 // SPDX-License-Identifier: BSD-3-Clause-Clear
 
-import type { ClientWithCoreApi } from '@mysten/sui/client';
+import type { SuiClientTypes } from '@mysten/sui/client';
 
 import { InvalidObjectError } from './errors.js';
 
@@ -15,19 +15,24 @@ import { InvalidObjectError } from './errors.js';
  */
 export function objResToBcs(obj: { objectBcs?: Uint8Array; type?: string }): Uint8Array {
 	if (!obj.objectBcs) {
-		throw new InvalidObjectError(
-			`Object BCS missing: ${JSON.stringify(obj.type, null, 2)}`,
-		);
+		throw new InvalidObjectError(`Object BCS missing: ${JSON.stringify(obj.type, null, 2)}`);
 	}
 
 	return obj.objectBcs;
 }
 
 export async function fetchAllDynamicFields(
-	suiClient: ClientWithCoreApi,
+	suiClient: SuiClientTypes.TransportMethods,
 	parentId: string,
-): Promise<{ fieldId: string; type: string; name: { type: string; bcs: Uint8Array }; valueType: string }[]> {
-	const allFields: { fieldId: string; type: string; name: { type: string; bcs: Uint8Array }; valueType: string }[] = [];
+): Promise<
+	{ fieldId: string; type: string; name: { type: string; bcs: Uint8Array }; valueType: string }[]
+> {
+	const allFields: {
+		fieldId: string;
+		type: string;
+		name: { type: string; bcs: Uint8Array };
+		valueType: string;
+	}[] = [];
 	let cursor: string | null = null;
 
 	// eslint-disable-next-line no-constant-condition

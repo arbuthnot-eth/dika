@@ -1,4 +1,4 @@
-import { SuiClient } from '@mysten/sui/client';
+import type { SuiGrpcClient } from '@mysten/sui/grpc';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { Transaction } from '@mysten/sui/transactions';
 
@@ -18,7 +18,7 @@ interface ActiveNetworkKey {
 }
 
 export async function testCreateNetworkKey(
-	suiClient: SuiClient,
+	suiClient: SuiGrpcClient,
 	protocolCapID: string,
 	publisherKeypair: Ed25519Keypair,
 ): Promise<string> {

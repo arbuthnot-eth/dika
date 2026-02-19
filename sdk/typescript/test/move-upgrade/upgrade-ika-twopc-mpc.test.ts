@@ -3,7 +3,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import * as TOML from '@iarna/toml';
 import { bcs } from '@mysten/bcs';
-import { getFullnodeUrl, SuiClient } from '@mysten/sui/client';
+import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { Transaction } from '@mysten/sui/transactions';
 import { describe, it } from 'vitest';
@@ -16,7 +16,10 @@ describe('Upgrade twopc_mpc Move package', () => {
 	it('Update the twopc_mpc package and migrate the dwallet coordinator', async () => {
 		await createIkaGenesis();
 		const signer = await getPublisherKeypair();
-		const suiClient = new SuiClient({ url: getFullnodeUrl('localnet') });
+		const suiClient = new SuiGrpcClient({
+			baseUrl: 'http://127.0.0.1:9000',
+			network: 'localnet',
+		});
 		const ikaClient = createTestIkaClient(suiClient);
 		await ikaClient.initialize();
 
@@ -81,23 +84,23 @@ export async function getPublisherKeypair(): Promise<Ed25519Keypair> {
 }
 
 export async function getProtocolCapID(
-	suiClient: SuiClient,
+	suiClient: SuiGrpcClient,
 	publisherAddress: string,
 	ikaClient: IkaClient,
 ): Promise<string> {
-	const protocolCapID = (
-		await suiClient.getOwnedObjects({
-			owner: publisherAddress,
-			filter: {
-				StructType: `${ikaClient.ikaConfig.packages.ikaCommonPackage}::protocol_cap::ProtocolCap`,
-			},
-		})
-	).data.at(0).data.objectId;
+	const protocolCapObjects = await suiClient.listOwnedObjects({
+		owner: publisherAddress,
+		type: `${ikaClient.ikaConfig.packages.ikaCommonPackage}::protocol_cap::ProtocolCap`,
+	});
+	const protocolCapID = protocolCapObjects.objects.at(0)?.objectId;
+	if (!protocolCapID) {
+		throw new Error('ProtocolCap not found for publisher address');
+	}
 	return protocolCapID;
 }
 
 export async function deployUpgradedPackage(
-	suiClient: SuiClient,
+	suiClient: SuiGrpcClient,
 	signer: Ed25519Keypair,
 	packagePath: string,
 	ikaClient: IkaClient,
@@ -160,16 +163,22 @@ export async function deployUpgradedPackage(
 	const result = await suiClient.signAndExecuteTransaction({
 		signer,
 		transaction: tx,
-		options: {
-			showEffects: true,
-			showObjectChanges: true,
+		include: {
+			effects: true,
 		},
 	});
-	return result.effects.created.at(0).reference.objectId;
+	const txResult = result.$kind === 'Transaction' ? result.Transaction : result.FailedTransaction;
+	const createdObject = txResult.effects?.changedObjects.find(
+		(obj) => obj.idOperation === 'Created',
+	);
+	if (!createdObject) {
+		throw new Error('Upgrade created object not found in transaction effects');
+	}
+	return createdObject.objectId;
 }
 
 export async function migrateCoordinator(
-	suiClient: SuiClient,
+	suiClient: SuiGrpcClient,
 	signer: Ed25519Keypair,
 	ikaClient: IkaClient,
 	protocolCapID: string,
@@ -200,9 +209,8 @@ export async function migrateCoordinator(
 	await suiClient.signAndExecuteTransaction({
 		signer,
 		transaction: tx,
-		options: {
-			showEffects: true,
-			showObjectChanges: true,
+		include: {
+			effects: true,
 		},
 	});
 }

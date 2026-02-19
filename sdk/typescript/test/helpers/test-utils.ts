@@ -5,8 +5,9 @@ import fs from 'fs';
 import path from 'path';
 import { dwallet_version } from '@ika.xyz/ika-wasm';
 import { toHex } from '@mysten/bcs';
-import { getFullnodeUrl, SuiClient } from '@mysten/sui/client';
+import type { SuiClientTypes } from '@mysten/sui/client';
 import { getFaucetHost, requestSuiFromFaucetV2 } from '@mysten/sui/faucet';
+import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 import { Secp256k1Keypair } from '@mysten/sui/keypairs/secp256k1';
 import type { Transaction, TransactionObjectArgument } from '@mysten/sui/transactions';
@@ -37,7 +38,7 @@ import {
 const testSeeds = new Map<string, Uint8Array>();
 
 export async function getObjectWithType<TObject>(
-	suiClient: SuiClient,
+	suiClient: SuiGrpcClient,
 	objectID: string,
 	isObject: (obj: any) => obj is TObject,
 ): Promise<TObject> {
@@ -48,14 +49,12 @@ export async function getObjectWithType<TObject>(
 		const interval = 1;
 		await delay(interval);
 		const res = await suiClient.getObject({
-			id: objectID,
-			options: { showContent: true },
+			objectId: objectID,
+			include: { json: true },
 		});
 
 		const objectData =
-			res.data?.content?.dataType === 'moveObject' && isObject(res.data.content.fields)
-				? (res.data.content.fields as TObject)
-				: null;
+			res.object?.json && isObject(res.object.json) ? (res.object.json as TObject) : null;
 
 		if (objectData) {
 			return objectData;
@@ -100,9 +99,10 @@ export function clearAllTestSeeds(): void {
 /**
  * Creates a SuiClient for testing
  */
-export function createTestSuiClient(): SuiClient {
-	return new SuiClient({
-		url: process.env.SUI_TESTNET_URL || getFullnodeUrl('localnet'),
+export function createTestSuiClient(): SuiGrpcClient {
+	return new SuiGrpcClient({
+		baseUrl: process.env.SUI_TESTNET_URL || 'http://127.0.0.1:9000',
+		network: 'localnet',
 	});
 }
 
@@ -187,7 +187,7 @@ export function findIkaConfigFile(): string {
 /**
  * Creates an IkaClient for testing
  */
-export function createTestIkaClient(suiClient: SuiClient): IkaClient {
+export function createTestIkaClient(suiClient: SuiClientTypes.TransportMethods): IkaClient {
 	const configPath = findIkaConfigFile();
 	const parsedJson = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 
@@ -218,7 +218,7 @@ export function createTestIkaClient(suiClient: SuiClient): IkaClient {
  * Executes a transaction with deterministic signing
  */
 export async function executeTestTransaction(
-	suiClient: SuiClient,
+	suiClient: SuiGrpcClient,
 	transaction: Transaction,
 	testName: string,
 ) {
@@ -232,17 +232,28 @@ export async function executeTestTransaction(
  * Executes a transaction with deterministic signing using a provided keypair.
  */
 export async function executeTestTransactionWithKeypair(
-	suiClient: SuiClient,
+	suiClient: SuiGrpcClient,
 	transaction: Transaction,
 	signerKeypair: Ed25519Keypair,
 ) {
-	return suiClient.signAndExecuteTransaction({
+	const result = await suiClient.signAndExecuteTransaction({
 		transaction,
 		signer: signerKeypair,
-		options: {
-			showEvents: true,
+		include: {
+			events: true,
 		},
 	});
+
+	const txResult = result.$kind === 'Transaction' ? result.Transaction : result.FailedTransaction;
+
+	return {
+		...txResult,
+		events: txResult.events?.map((event) => ({
+			...event,
+			parsedJson: event.json ?? null,
+			bcs: Buffer.from(event.bcs).toString('base64'),
+		})),
+	};
 }
 
 /**
@@ -388,7 +399,7 @@ export function delay(seconds: number): Promise<void> {
 
 export async function runSignFullFlowWithDWallet(
 	ikaClient: IkaClient,
-	suiClient: SuiClient,
+	suiClient: SuiGrpcClient,
 	createDWalletResponse: {
 		dWallet: DWallet;
 		encryptedUserSecretKeyShare: EncryptedUserSecretKeyShare;
@@ -447,7 +458,7 @@ export async function runSignFullFlowWithDWallet(
 
 export async function runSignFullFlowWithV1Dwallet(
 	ikaClient: IkaClient,
-	suiClient: SuiClient,
+	suiClient: SuiGrpcClient,
 	testName: string,
 	registerEncryptionKey: boolean = true,
 ) {
@@ -501,7 +512,7 @@ export async function runSignFullFlowWithV1Dwallet(
 
 export async function runSignFullFlowWithV2Dwallet(
 	ikaClient: IkaClient,
-	suiClient: SuiClient,
+	suiClient: SuiGrpcClient,
 	testName: string,
 	registerEncryptionKey: boolean = true,
 ) {

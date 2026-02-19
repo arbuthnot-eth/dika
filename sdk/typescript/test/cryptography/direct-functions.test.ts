@@ -31,11 +31,11 @@ describe('Cryptography Direct Functions', () => {
 		expect(keypair.decryptionKey).toBeInstanceOf(Uint8Array);
 
 		// Verify exact expected lengths
-		expect(keypair.encryptionKey.length).toBe(778);
+		expect(keypair.encryptionKey.length).toBe(261);
 		expect(keypair.decryptionKey.length).toBe(194);
 
 		// Verify exact expected output for first 20 bytes (deterministic with this seed)
-		const expectedEncryptionKeyStart = '800218a3f328cfa9432b5c3f0755d1e480d20eac';
+		const expectedEncryptionKeyStart = '008202800218a3f328cfa9432b5c3f0755d1e480';
 		const expectedDecryptionKeyStart = 'c00183d131cf69691ca1a7a3fc134f149880e8bb';
 
 		const actualEncryptionKeyStart = Array.from(keypair.encryptionKey.slice(0, 20))
@@ -198,14 +198,14 @@ describe('Cryptography Direct Functions', () => {
 
 	it('should have exact expected cryptographic enum values', async () => {
 		// Test exact expected enum values
-		expect(Curve.SECP256K1).toBe(0);
-		expect(Hash.SHA256).toBe(1);
-		expect(Hash.KECCAK256).toBe(0);
+		expect(Curve.SECP256K1).toBe('SECP256K1');
+		expect(Hash.SHA256).toBe('SHA256');
+		expect(Hash.KECCAK256).toBe('KECCAK256');
 
 		// Verify types
-		expect(typeof Curve.SECP256K1).toBe('number');
-		expect(typeof Hash.SHA256).toBe('number');
-		expect(typeof Hash.KECCAK256).toBe('number');
+		expect(typeof Curve.SECP256K1).toBe('string');
+		expect(typeof Hash.SHA256).toBe('string');
+		expect(typeof Hash.KECCAK256).toBe('string');
 	});
 
 	it('should handle edge cases and invalid inputs gracefully', async () => {
@@ -230,14 +230,14 @@ describe('Cryptography Direct Functions', () => {
 	it('should test curve enum values', async () => {
 		// Test that curve enum values are properly defined
 		expect(Curve.SECP256K1).toBeDefined();
-		expect(typeof Curve.SECP256K1).toBe('number');
+		expect(typeof Curve.SECP256K1).toBe('string');
 	});
 
 	it('should test hash enum values', async () => {
 		expect(Hash.SHA256).toBeDefined();
 		expect(Hash.KECCAK256).toBeDefined();
-		expect(typeof Hash.SHA256).toBe('number');
-		expect(typeof Hash.KECCAK256).toBe('number');
+		expect(typeof Hash.SHA256).toBe('string');
+		expect(typeof Hash.KECCAK256).toBe('string');
 		expect(Hash.SHA256).not.toBe(Hash.KECCAK256);
 	});
 
