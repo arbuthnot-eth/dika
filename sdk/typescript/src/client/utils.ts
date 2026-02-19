@@ -1,46 +1,46 @@
 // Copyright (c) dWallet Labs, Ltd.
 // SPDX-License-Identifier: BSD-3-Clause-Clear
 
-import type { DynamicFieldInfo, SuiClient, SuiObjectResponse } from '@mysten/sui/client';
+import type { ClientWithCoreApi } from '@mysten/sui/client';
 
 import { InvalidObjectError } from './errors.js';
 
 /**
- * Extract BCS (Binary Canonical Serialization) bytes from a Sui object response.
- * This function validates the response and extracts the serialized object data.
+ * Extract BCS (Binary Canonical Serialization) bytes from a v2 Sui object response.
+ * In @mysten/sui v2, objectBcs is a Uint8Array directly on the object.
  *
- * @param resp - The Sui object response from a blockchain query
+ * @param obj - The object from a v2 getObject/getObjects response (with include: { objectBcs: true })
  * @returns The BCS-encoded bytes of the object
- * @throws {InvalidObjectError} If the response doesn't contain valid BCS data
+ * @throws {InvalidObjectError} If the object doesn't contain BCS data
  */
-export function objResToBcs(resp: SuiObjectResponse): string {
-	if (resp.data?.bcs?.dataType !== 'moveObject') {
+export function objResToBcs(obj: { objectBcs?: Uint8Array; type?: string }): Uint8Array {
+	if (!obj.objectBcs) {
 		throw new InvalidObjectError(
-			`Response bcs missing: ${JSON.stringify(resp.data?.type, null, 2)}`,
+			`Object BCS missing: ${JSON.stringify(obj.type, null, 2)}`,
 		);
 	}
 
-	return resp.data.bcs.bcsBytes;
+	return obj.objectBcs;
 }
 
 export async function fetchAllDynamicFields(
-	suiClient: SuiClient,
+	suiClient: ClientWithCoreApi,
 	parentId: string,
-): Promise<DynamicFieldInfo[]> {
-	const allFields: any[] = [];
+): Promise<{ fieldId: string; type: string; name: { type: string; bcs: Uint8Array }; valueType: string }[]> {
+	const allFields: { fieldId: string; type: string; name: { type: string; bcs: Uint8Array }; valueType: string }[] = [];
 	let cursor: string | null = null;
 
 	// eslint-disable-next-line no-constant-condition
 	while (true) {
-		const response = await suiClient.getDynamicFields({
+		const response = await suiClient.listDynamicFields({
 			parentId,
 			cursor,
 		});
-		allFields.push(...response.data);
-		if (response.nextCursor === cursor) {
+		allFields.push(...response.dynamicFields);
+		if (!response.hasNextPage) {
 			break;
 		}
-		cursor = response.nextCursor;
+		cursor = response.cursor;
 	}
 
 	return allFields;

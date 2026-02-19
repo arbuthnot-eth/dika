@@ -3,7 +3,7 @@
 
 import type { BcsType } from '@mysten/sui/bcs';
 import { bcs, BcsStruct } from '@mysten/sui/bcs';
-import type { SuiClient } from '@mysten/sui/client';
+import type { ClientWithCoreApi } from '@mysten/sui/client';
 
 import * as CoordinatorInnerModule from '../generated/ika_dwallet_2pc_mpc/coordinator_inner.js';
 import * as SystemInnerModule from '../generated/ika_system/system_inner.js';
@@ -61,7 +61,7 @@ export interface EncryptionKeyOptions {
 
 export interface IkaClientOptions {
 	config: IkaConfig;
-	suiClient: SuiClient;
+	suiClient: ClientWithCoreApi;
 	timeout?: number;
 	protocolPublicParameters?: {
 		networkEncryptionKeyPublicOutputID: string;
@@ -226,12 +226,6 @@ export const SignatureAlgorithm = {
 } as const;
 
 export type SignatureAlgorithm = (typeof SignatureAlgorithm)[keyof typeof SignatureAlgorithm];
-
-export interface SharedObjectOwner {
-	Shared: {
-		initial_shared_version: number;
-	};
-}
 
 export function DynamicField<E extends BcsType<any>>(...typeParameters: [E]) {
 	return new BcsStruct({
