@@ -404,8 +404,14 @@ mod tests {
             },
         );
         let field = Field {
-            id: UID { id: ID { bytes: ObjectID::random() } },
-            name: ID { bytes: ObjectID::random() },
+            id: UID {
+                id: ID {
+                    bytes: ObjectID::random(),
+                },
+            },
+            name: ID {
+                bytes: ObjectID::random(),
+            },
             value: event,
         };
         let contents = bcs::to_bytes(&field).expect("should serialize pulled event");
