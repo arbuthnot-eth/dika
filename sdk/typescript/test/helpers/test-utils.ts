@@ -163,6 +163,11 @@ export function findIkaConfigFile(): string {
 		path.resolve(__dirname, '../../../../ika_config.json'),
 		// From workspace root (assuming we're in sdk/typescript/)
 		path.resolve(__dirname, '../../../ika_config.json'),
+		// Fallback to testing directory structure
+		path.resolve(process.cwd(), '../../ika_config.json'),
+		path.resolve(process.cwd(), '../../../ika_config.json'),
+		path.resolve(process.cwd(), 'ika_config.json'),
+		path.resolve(process.cwd(), '../../../../ika_config.json'),
 	];
 
 	for (const configPath of possiblePaths) {
