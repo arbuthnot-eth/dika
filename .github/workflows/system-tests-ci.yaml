@@ -83,6 +83,7 @@ jobs:
         run: npx vitest run -t "DWallet Signing|DWallet Future Signing|DWallet Creation|Shared DWallet Signing|Shared DWallet|DWallet Transfer|Shared Imported DWallet Signing|Imported DWallet Creation|Imported DWallet Sharing|Imported DWallet Signing"
         working-directory: ./sdk/typescript
         env:
+          RUN_INTEGRATION_TESTS: 'true'
           SUI_TESTNET_URL: ${{ github.event.inputs.SUI_FULLNODE_URL }}
           SUI_FAUCET_URL: ${{ github.event.inputs.SUI_FAUCET_URL }}
 
