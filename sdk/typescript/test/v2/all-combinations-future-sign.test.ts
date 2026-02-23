@@ -34,6 +34,7 @@ import {
 	generateTestKeypair,
 	requestTestFaucetFunds,
 	retryUntil,
+	skipIntegrationTests,
 } from '../helpers/test-utils';
 import {
 	acceptUserShareAndActivate,
@@ -669,7 +670,7 @@ async function testCombination(
 	);
 }
 
-describe('All Valid DWallet-Curve-SignatureAlgorithm-Hash Combinations (Future Sign)', () => {
+describe.skipIf(skipIntegrationTests)('All Valid DWallet-Curve-SignatureAlgorithm-Hash Combinations (Future Sign)', () => {
 	// ECDSASecp256k1 + SECP256K1 combinations (3 hashes × 3 dwallet types = 9 tests)
 	describe('ECDSASecp256k1 on SECP256K1', () => {
 		describe('Zero Trust', () => {

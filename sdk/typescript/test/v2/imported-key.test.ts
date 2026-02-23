@@ -34,6 +34,7 @@ import {
 	generateTestKeypair,
 	requestTestFaucetFunds,
 	retryUntil,
+	skipIntegrationTests,
 } from '../helpers/test-utils';
 
 /**
@@ -491,7 +492,7 @@ export async function testImportedKeyScenario(
 	}
 }
 
-describe('Imported Key DWallet Creation and Signing', () => {
+describe.skipIf(skipIntegrationTests)('Imported Key DWallet Creation and Signing', () => {
 	describe('ECDSASecp256k1 on SECP256K1', () => {
 		it('should create imported key DWallet and sign with KECCAK256', async () => {
 			await testImportedKeyScenario(

@@ -29,6 +29,7 @@ import {
 	generateTestKeypair,
 	requestTestFaucetFunds,
 	retryUntil,
+	skipIntegrationTests,
 } from '../helpers/test-utils';
 import {
 	acceptUserShareAndActivate,
@@ -339,7 +340,7 @@ export async function testSignCombination(
 	);
 }
 
-describe('All Valid Curve-SignatureAlgorithm-Hash Combinations', () => {
+describe.skipIf(skipIntegrationTests)('All Valid Curve-SignatureAlgorithm-Hash Combinations', () => {
 	// ECDSASecp256k1 + SECP256K1 combinations (3 tests)
 	describe('ECDSASecp256k1 on SECP256K1', () => {
 		it('should work with KECCAK256', async () => {

@@ -32,6 +32,7 @@ import {
 	generateTestKeypair,
 	requestTestFaucetFunds,
 	retryUntil,
+	skipIntegrationTests,
 } from '../helpers/test-utils';
 
 /**
@@ -583,7 +584,7 @@ async function testMakeImportedKeyPublicAndSign(
 	);
 }
 
-describe('Make Imported Key DWallet User Share Public and Sign', () => {
+describe.skipIf(skipIntegrationTests)('Make Imported Key DWallet User Share Public and Sign', () => {
 	describe('ECDSASecp256k1 on SECP256K1', () => {
 		it('should create imported key wallet, make share public, and sign with KECCAK256', async () => {
 			await testMakeImportedKeyPublicAndSign(

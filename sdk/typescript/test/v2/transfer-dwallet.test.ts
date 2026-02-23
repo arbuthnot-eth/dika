@@ -32,6 +32,7 @@ import {
 	generateTestKeypair,
 	requestTestFaucetFunds,
 	retryUntil,
+	skipIntegrationTests,
 } from '../helpers/test-utils';
 import {
 	acceptUserShareAndActivate,
@@ -500,7 +501,7 @@ async function testDWalletTransfer(
 	);
 }
 
-describe('DWallet Transfer from Alice to Bob', () => {
+describe.skipIf(skipIntegrationTests)('DWallet Transfer from Alice to Bob', () => {
 	describe('ECDSASecp256k1 on SECP256K1', () => {
 		it('should transfer DWallet from Alice to Bob and Bob should sign with KECCAK256', async () => {
 			await testDWalletTransfer(

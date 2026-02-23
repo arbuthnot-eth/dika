@@ -29,6 +29,7 @@ import {
 	generateTestKeypair,
 	requestTestFaucetFunds,
 	retryUntil,
+	skipIntegrationTests,
 } from '../helpers/test-utils';
 import {
 	acceptUserShareAndActivate,
@@ -357,7 +358,7 @@ async function testMakePublicAndSign(
 	);
 }
 
-describe('Make User Share Public and Sign', () => {
+describe.skipIf(skipIntegrationTests)('Make User Share Public and Sign', () => {
 	describe('ECDSASecp256k1 on SECP256K1', () => {
 		it('should create zero trust wallet, make share public, and sign with KECCAK256', async () => {
 			await testMakePublicAndSign(

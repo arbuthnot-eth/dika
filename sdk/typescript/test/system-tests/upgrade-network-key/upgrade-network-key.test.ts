@@ -17,6 +17,7 @@ import {
 	generateTestKeypair,
 	requestTestFaucetFunds,
 	waitForEpochSwitch,
+	skipIntegrationTests,
 } from '../../helpers/test-utils';
 import {
 	deployUpgradedPackage,
@@ -153,7 +154,7 @@ async function upgradeValidatorsDockerImage(kc: KubeConfig, startIndex = 0, endI
 	}
 }
 
-describe('system tests', () => {
+describe.skipIf(skipIntegrationTests)('system tests', () => {
 	it('run a full flow test of upgrading the network key version and the move code', async () => {
 		const v2NetworkKeyDockerTag =
 			'us-docker.pkg.dev/common-449616/ika-common-public-containers/ika-node:testnet-v1.1.4';

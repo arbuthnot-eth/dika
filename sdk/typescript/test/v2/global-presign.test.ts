@@ -1,9 +1,10 @@
 import { describe, it } from 'vitest';
 
 import { Curve, SignatureAlgorithm } from '../../src';
+import { skipIntegrationTests } from '../helpers/test-utils';
 import { runGlobalPresignTest } from './helpers';
 
-describe('Global Presign', () => {
+describe.skipIf(skipIntegrationTests)('Global Presign', () => {
 	it('should create a global presign - Secp256k1 ECDSASecp256k1', async () => {
 		await runGlobalPresignTest(
 			'global-presign-test-secp256k1',

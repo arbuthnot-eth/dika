@@ -1,9 +1,10 @@
 import { describe, it } from 'vitest';
 
 import { Curve, Hash, SignatureAlgorithm } from '../../src';
+import { skipIntegrationTests } from '../helpers/test-utils';
 import { runCompleteDKGFlow, runCompleteSharedDKGFlowWithSign } from './helpers';
 
-describe('DWallet Creation', () => {
+describe.skipIf(skipIntegrationTests)('DWallet Creation', () => {
 	it('should sign during DKG v2 for a new zero trust DWallet - Secp256k1', async () => {
 		await runCompleteDKGFlow('dwallet-creation-dkg-v2-test-secp256k1', Curve.SECP256K1, {
 			message: Buffer.from('test message'),

@@ -33,6 +33,30 @@ import {
 	testSign,
 } from './dwallet-test-helpers';
 
+/**
+ * Checks whether integration tests should run.
+ * Integration tests are skipped unless:
+ * 1. The `RUN_INTEGRATION_TESTS` environment variable is set to `true`, AND
+ * 2. An `ika_config.json` file is present (or `IKA_CONFIG_PATH` points to one).
+ */
+export function shouldRunIntegrationTests(): boolean {
+	if (process.env.RUN_INTEGRATION_TESTS !== 'true') {
+		return false;
+	}
+	try {
+		findIkaConfigFile();
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Whether to skip integration tests.
+ * Use with `describe.skipIf(skipIntegrationTests)` in test files.
+ */
+export const skipIntegrationTests = !shouldRunIntegrationTests();
+
 // Store random seeds per test to ensure deterministic behavior within each test
 const testSeeds = new Map<string, Uint8Array>();
 

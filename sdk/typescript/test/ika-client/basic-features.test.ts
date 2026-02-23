@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { Curve } from '../../src';
 import { createIndividualTestSetup, getSharedTestSetup } from '../helpers/shared-test-setup';
-import { generateTestKeypair } from '../helpers/test-utils';
+import { generateTestKeypair, skipIntegrationTests } from '../helpers/test-utils';
 
 // Shared test data to reduce redundant network calls
 let sharedTestCache = {
@@ -82,7 +82,7 @@ function validateDWalletCapsResult(capsResult: any, testName: string = 'caps') {
 	expect(capsResult, `${testName} should have cursor property`).toHaveProperty('cursor');
 }
 
-describe('IkaClient Basic Features', () => {
+describe.skipIf(skipIntegrationTests)('IkaClient Basic Features', () => {
 	it('should handle initialization and caching', async () => {
 		const { suiClient, ikaClient } = await createIndividualTestSetup('initialization-test');
 

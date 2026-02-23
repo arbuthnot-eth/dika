@@ -10,12 +10,13 @@ import {
 	delay,
 	runSignFullFlowWithV1Dwallet,
 	waitForEpochSwitch,
+	skipIntegrationTests,
 } from '../helpers/test-utils';
 import { createConfigMaps } from './config-map';
 import { createIkaGenesis, deployIkaNetwork, NAMESPACE_NAME, TEST_ROOT_DIR } from './globals';
 import { createValidatorPod, killValidatorPod } from './pods';
 
-describe('system tests', () => {
+describe.skipIf(skipIntegrationTests)('system tests', () => {
 	it('deploy the ika network from the current directory to the local kubernetes cluster', async () => {
 		require('dotenv').config({ path: `${TEST_ROOT_DIR}/.env` });
 		await deployIkaNetwork();
