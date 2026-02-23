@@ -6,8 +6,8 @@ import type { SuiClientTypes } from '@mysten/sui/client';
 import { Transaction } from '@mysten/sui/transactions';
 import { toHex } from '@mysten/sui/utils';
 
-import * as CoordinatorInnerModule from '../generated/ika_dwallet_2pc_mpc/coordinator_inner.js';
 import * as CoordinatorModule from '../generated/ika_dwallet_2pc_mpc/coordinator.js';
+import * as CoordinatorInnerModule from '../generated/ika_dwallet_2pc_mpc/coordinator_inner.js';
 import { TableVec } from '../generated/ika_system/deps/sui/table_vec.js';
 import * as SystemModule from '../generated/ika_system/system.js';
 import { getActiveEncryptionKey as getActiveEncryptionKeyFromCoordinator } from '../tx/coordinator.js';
@@ -109,10 +109,10 @@ export class IkaClient {
 	/**
 	 * Fetch a single object with BCS bytes using v2 getObjects.
 	 */
-	async #getObjectWithBcs(objectId: string): Promise<SuiClientTypes.Object<{ objectBcs: true }>> {
+	async #getObjectWithBcs(objectId: string): Promise<SuiClientTypes.Object<{ content: true }>> {
 		const response = await this.client.getObjects({
 			objectIds: [objectId],
-			include: { objectBcs: true },
+			include: { content: true },
 		});
 
 		const object = response.objects[0];
@@ -653,7 +653,7 @@ export class IkaClient {
 		return this.client
 			.getObjects({
 				objectIds: dwalletIDs,
-				include: { objectBcs: true },
+				include: { content: true },
 			})
 			.then((resp) => {
 				return resp.objects.map((obj) => {
@@ -696,7 +696,7 @@ export class IkaClient {
 			owner: address,
 			type: `${this.ikaConfig.packages.ikaDwallet2pcMpcOriginalPackage}::coordinator_inner::DWalletCap`,
 			include: {
-				objectBcs: true,
+				content: true,
 			},
 			cursor: cursor ?? null,
 			limit,
@@ -962,12 +962,19 @@ export class IkaClient {
 					this.ikaConfig.objects.ikaDWalletCoordinator.objectID,
 					this.ikaConfig.objects.ikaSystemObject.objectID,
 				],
-				include: { objectBcs: true },
+				include: { content: true },
 			});
 
 			const [coordinator, system] = resp.objects;
 			if (coordinator instanceof Error) throw coordinator;
 			if (system instanceof Error) throw system;
+
+			this.#assertObjectType(
+				coordinator.type,
+				'::coordinator::DWalletCoordinator',
+				'dWallet coordinator',
+			);
+			this.#assertObjectType(system.type, '::system::System', 'system');
 
 			const coordinatorParsed = CoordinatorModule.DWalletCoordinator.parse(
 				objResToBcs(coordinator),
@@ -975,25 +982,28 @@ export class IkaClient {
 			const systemParsed = SystemModule.System.parse(objResToBcs(system));
 
 			const [coordinatorDFs, systemDFs] = await Promise.all([
-				this.client.listDynamicFields({
-					parentId: coordinatorParsed.id.id,
-				}),
-				this.client.listDynamicFields({
-					parentId: systemParsed.id.id,
-				}),
+				fetchAllDynamicFields(this.client, coordinator.objectId),
+				fetchAllDynamicFields(this.client, system.objectId),
 			]);
 
-			if (!coordinatorDFs.dynamicFields?.length || !systemDFs.dynamicFields?.length) {
+			if (!coordinatorDFs.length || !systemDFs.length) {
 				throw new ObjectNotFoundError('Dynamic fields for coordinator or system');
 			}
 
-			const coordinatorInnerDF =
-				coordinatorDFs.dynamicFields[coordinatorDFs.dynamicFields.length - 1];
-			const systemInnerDF = systemDFs.dynamicFields[systemDFs.dynamicFields.length - 1];
+			const coordinatorInnerDF = this.#selectHighestVersionDynamicField(
+				coordinatorDFs,
+				'::coordinator_inner::DWalletCoordinatorInner',
+				'coordinator',
+			);
+			const systemInnerDF = this.#selectHighestVersionDynamicField(
+				systemDFs,
+				'::system_inner::SystemInner',
+				'system',
+			);
 
 			const innerResp = await this.client.getObjects({
 				objectIds: [coordinatorInnerDF.fieldId, systemInnerDF.fieldId],
-				include: { objectBcs: true },
+				include: { content: true },
 			});
 
 			const [coordinatorInnerObj, systemInnerObj] = innerResp.objects;
@@ -1027,6 +1037,40 @@ export class IkaClient {
 
 			throw new NetworkError('Failed to fetch objects', error as Error);
 		}
+	}
+
+	#assertObjectType(type: string, expectedSuffix: string, objectName: string): void {
+		if (!type.endsWith(expectedSuffix)) {
+			throw new InvalidObjectError(
+				`Expected ${objectName} object type ending with "${expectedSuffix}", got "${type}". ` +
+					`This usually means the configured object ID is stale or points to the wrong object.`,
+			);
+		}
+	}
+
+	#selectHighestVersionDynamicField(
+		dynamicFields: { fieldId: string; valueType: string; name: { bcs: Uint8Array } }[],
+		expectedValueTypeSuffix: string,
+		objectName: string,
+	): { fieldId: string; valueType: string; name: { bcs: Uint8Array } } {
+		const matching = dynamicFields.filter((field) =>
+			field.valueType.endsWith(expectedValueTypeSuffix),
+		);
+
+		if (matching.length === 0) {
+			const availableTypes = [...new Set(dynamicFields.map((field) => field.valueType))].join(', ');
+			throw new InvalidObjectError(
+				`Failed to find ${objectName} inner dynamic field "${expectedValueTypeSuffix}". ` +
+					`Found value types: [${availableTypes}]. ` +
+					`This usually means the configured object ID is stale or points to the wrong object.`,
+			);
+		}
+
+		const sorted = matching
+			.map((field) => ({ field, key: bcs.u64().parse(field.name.bcs) }))
+			.sort((a, b) => Number(a.key) - Number(b.key));
+
+		return sorted[sorted.length - 1].field;
 	}
 
 	/**

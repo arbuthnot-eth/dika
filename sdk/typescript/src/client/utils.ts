@@ -6,19 +6,21 @@ import type { SuiClientTypes } from '@mysten/sui/client';
 import { InvalidObjectError } from './errors.js';
 
 /**
- * Extract BCS (Binary Canonical Serialization) bytes from a v2 Sui object response.
- * In @mysten/sui v2, objectBcs is a Uint8Array directly on the object.
+ * Extract MoveObject BCS content bytes from a v2 Sui object response.
+ * In @mysten/sui v2, `content` (with `include: { content: true }`) returns the raw
+ * MoveObject struct bytes that BCS-generated parsers expect. This is distinct from
+ * `objectBcs` which returns the full Object envelope (type + owner + data + metadata).
  *
- * @param obj - The object from a v2 getObject/getObjects response (with include: { objectBcs: true })
- * @returns The BCS-encoded bytes of the object
- * @throws {InvalidObjectError} If the object doesn't contain BCS data
+ * @param obj - The object from a v2 getObject/getObjects response (with include: { content: true })
+ * @returns The BCS-encoded struct bytes of the MoveObject
+ * @throws {InvalidObjectError} If the object doesn't contain BCS content
  */
-export function objResToBcs(obj: { objectBcs?: Uint8Array; type?: string }): Uint8Array {
-	if (!obj.objectBcs) {
-		throw new InvalidObjectError(`Object BCS missing: ${JSON.stringify(obj.type, null, 2)}`);
+export function objResToBcs(obj: { content?: Uint8Array; type?: string }): Uint8Array {
+	if (!obj.content) {
+		throw new InvalidObjectError(`Object BCS content missing: ${JSON.stringify(obj.type, null, 2)}`);
 	}
 
-	return obj.objectBcs;
+	return obj.content;
 }
 
 export async function fetchAllDynamicFields(

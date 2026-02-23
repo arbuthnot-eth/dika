@@ -13,26 +13,26 @@ import {
 
 describe('Utils', () => {
 	describe('objResToBcs', () => {
-		it('should extract BCS bytes from valid Sui object response', () => {
+		it('should extract BCS content bytes from valid Sui object response', () => {
 			const mockResponse = {
-				objectBcs: new Uint8Array([1, 2, 3]),
+				content: new Uint8Array([1, 2, 3]),
 			};
 
 			const result = objResToBcs(mockResponse);
 			expect(result).toEqual(new Uint8Array([1, 2, 3]));
 		});
 
-		it('should throw InvalidObjectError when bcs data is missing', () => {
+		it('should throw InvalidObjectError when content is missing', () => {
 			const mockResponse = {
 				type: 'SomeType',
 			};
 
 			expect(() => objResToBcs(mockResponse)).toThrow(InvalidObjectError);
-			expect(() => objResToBcs(mockResponse)).toThrow('Object BCS missing');
+			expect(() => objResToBcs(mockResponse)).toThrow('Object BCS content missing');
 		});
 
-		it('should throw InvalidObjectError when objectBcs is undefined', () => {
-			const mockResponse = { objectBcs: undefined };
+		it('should throw InvalidObjectError when content is undefined', () => {
+			const mockResponse = { content: undefined };
 			expect(() => objResToBcs(mockResponse)).toThrow(InvalidObjectError);
 		});
 
