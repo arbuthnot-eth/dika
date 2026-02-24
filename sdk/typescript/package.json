@@ -47,7 +47,7 @@
 		"lint": "pnpm run eslint:check && pnpm run prettier:check",
 		"lint:fix": "pnpm run eslint:fix && pnpm run prettier:fix",
 		"test:e2e": "vitest run e2e",
-		"prepare": "pnpm sui-ts-codegen generate"
+		"prepare": "sui client --yes active-address && pnpm sui-ts-codegen generate"
 	},
 	"bugs": {
 		"url": "https://github.com/dwallet-labs/ika/issues/new"
