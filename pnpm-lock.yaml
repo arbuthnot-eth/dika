@@ -114,18 +114,15 @@ importers:
 
   sdk/typescript:
     dependencies:
+      '@dika.sui/ika-wasm':
+        specifier: workspace:*
+        version: link:../ika-wasm
       '@iarna/toml':
         specifier: ^2.2.5
         version: 2.2.5
-      '@ika.xyz/ika-wasm':
-        specifier: workspace:*
-        version: link:../ika-wasm
       '@mysten/bcs':
         specifier: ^2.0.2
         version: 2.0.2
-      '@mysten/sui':
-        specifier: ^2.4.0
-        version: 2.4.0(typescript@5.8.3)
       '@noble/curves':
         specifier: ^2.0.1
         version: 2.0.1
@@ -136,7 +133,7 @@ importers:
         specifier: ^4.1.1
         version: 4.1.1
     devDependencies:
-      '@ika.xyz/build-scripts':
+      '@dika.sui/build-scripts':
         specifier: workspace:*
         version: link:../build-scripts
       '@kubernetes/client-node':
@@ -145,6 +142,9 @@ importers:
       '@mysten/codegen':
         specifier: ^0.5.9
         version: 0.5.9
+      '@mysten/sui':
+        specifier: ^2.4.0
+        version: 2.4.0(typescript@5.8.3)
       '@types/node':
         specifier: ^22.15.21
         version: 22.15.21
