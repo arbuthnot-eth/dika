@@ -14,7 +14,7 @@
 		"build:web": "npx cross-env RUSTFLAGS='--cfg getrandom_backend=\"wasm_js\"' wasm-pack build --target web --out-dir dist/web --${PROFILE} && rm dist/web/.gitignore",
 		"prepare": "npm run build"
 	},
-	"author": "dWallet Labs, Ltd. <dev@dwalletlabs.com>",
+	"author": "brando.sui (https://github.com/arbuthnot-eth)",
 	"version": "0.1.1",
 	"license": "BSD-3-Clause-Clear",
 	"types": "./dist/web/dwallet_mpc_wasm.d.ts",

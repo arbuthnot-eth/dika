@@ -1,6 +1,6 @@
 {
 	"name": "@dika.sui/sdk",
-	"author": "dWallet Labs, Ltd. <dev@dwalletlabs.com>",
+	"author": "brando.sui (https://github.com/arbuthnot-eth)",
 	"description": "Dika typescript sdk",
 	"repository": {
 		"type": "git",
