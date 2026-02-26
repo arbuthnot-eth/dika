@@ -1,5 +1,5 @@
 {
-	"name": "dika",
+	"name": "@dika.sui/sdk",
 	"author": "brando.sui (https://github.com/arbuthnot-eth)",
 	"description": "Dika typescript sdk",
 	"repository": {
