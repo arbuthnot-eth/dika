@@ -102,7 +102,7 @@ jobs:
         if: steps.ika_check.outputs.published == 'false'
         working-directory: ./sdk/ika-wasm
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
         run: |
           pnpm publish --no-git-checks --access public
           echo "Published ${{ steps.ika_pkg.outputs.name }}@${{ steps.ika_pkg.outputs.version }}"
@@ -143,7 +143,7 @@ jobs:
         if: steps.ts_check.outputs.published == 'false'
         working-directory: ./sdk/typescript
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
         run: |
           pnpm publish --no-git-checks --access public
           echo "Published ${{ steps.ts_pkg.outputs.name }}@${{ steps.ts_pkg.outputs.version }}"
