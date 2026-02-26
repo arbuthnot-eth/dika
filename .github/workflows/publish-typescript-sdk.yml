@@ -1,4 +1,4 @@
-name: Publish SDKs (ika-wasm + typescript)
+name: Publish @dika.sui/sdk
 
 on:
   workflow_dispatch: {} # manual trigger
@@ -13,14 +13,12 @@ env:
   SUI_VERSION: "sui@mainnet"
 
 jobs:
-  publish-sdks:
+  publish-sdk:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v6
-
-      # ---------- Rust + wasm-pack (for sdk/ika-wasm) ----------
 
       - name: Install Rust ${{ env.rust_stable }}
         uses: dtolnay/rust-toolchain@stable
@@ -38,7 +36,6 @@ jobs:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
-      # Update npm for registry checks (npm view commands)
       - name: Update npm to latest
         run: npm install -g npm@latest
 
@@ -49,101 +46,48 @@ jobs:
 
       - name: Install Sui CLI via suiup
         run: |
-          # Install suiup
           curl -sSfL https://raw.githubusercontent.com/MystenLabs/suiup/main/install.sh | sh
-
-          # Make suiup/sui available to later steps
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.local/bin:$PATH"
-
-          # Install chosen Sui CLI version
           "$HOME/.local/bin/suiup" install "$SUI_VERSION" -y
-
-          # Sanity check
           sui --version
 
       - name: Install dependencies (workspace)
         run: pnpm install --frozen-lockfile
 
-      # ---------- sdk/ika-wasm ----------
-
-      - name: Get sdk/ika-wasm package info
-        id: ika_pkg
-        working-directory: ./sdk/ika-wasm
-        run: |
-          NAME=$(node -p "require('./package.json').name")
-          VERSION=$(node -p "require('./package.json').version")
-          echo "name=$NAME" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Package: $NAME"
-          echo "Version: $VERSION"
-
-      - name: Check if sdk/ika-wasm version is already published
-        id: ika_check
-        env:
-          PKG_NAME: ${{ steps.ika_pkg.outputs.name }}
-          PKG_VERSION: ${{ steps.ika_pkg.outputs.version }}
-        run: |
-          echo "Checking if $PKG_NAME@$PKG_VERSION is already on npm..."
-          if npm view "$PKG_NAME@$PKG_VERSION" version > /dev/null 2>&1; then
-            echo "published=true" >> "$GITHUB_OUTPUT"
-            echo "$PKG_NAME@$PKG_VERSION is already published. Skipping publish."
-          else
-            echo "published=false" >> "$GITHUB_OUTPUT"
-            echo "$PKG_NAME@$PKG_VERSION is NOT published yet. Will publish."
-          fi
-
-      - name: Build (sdk/ika-wasm)
-        working-directory: ./sdk/ika-wasm
-        run: pnpm build
-        # this should run wasm-pack internally
-
-      - name: Publish sdk/ika-wasm
-        if: steps.ika_check.outputs.published == 'false'
-        working-directory: ./sdk/ika-wasm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
-        run: |
-          pnpm publish --no-git-checks --access public
-          echo "Published ${{ steps.ika_pkg.outputs.name }}@${{ steps.ika_pkg.outputs.version }}"
-
-      # ---------- sdk/typescript ----------
-
-      - name: Get sdk/typescript package info
-        id: ts_pkg
+      - name: Get package info
+        id: pkg
         working-directory: ./sdk/typescript
         run: |
           NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Package: $NAME"
-          echo "Version: $VERSION"
+          echo "Package: $NAME@$VERSION"
 
-      - name: Check if sdk/typescript version is already published
-        id: ts_check
+      - name: Check if already published
+        id: check
         env:
-          PKG_NAME: ${{ steps.ts_pkg.outputs.name }}
-          PKG_VERSION: ${{ steps.ts_pkg.outputs.version }}
+          PKG_NAME: ${{ steps.pkg.outputs.name }}
+          PKG_VERSION: ${{ steps.pkg.outputs.version }}
         run: |
-          echo "Checking if $PKG_NAME@$PKG_VERSION is already on npm..."
           if npm view "$PKG_NAME@$PKG_VERSION" version > /dev/null 2>&1; then
             echo "published=true" >> "$GITHUB_OUTPUT"
-            echo "$PKG_NAME@$PKG_VERSION is already published. Skipping publish."
+            echo "$PKG_NAME@$PKG_VERSION is already published. Skipping."
           else
             echo "published=false" >> "$GITHUB_OUTPUT"
-            echo "$PKG_NAME@$PKG_VERSION is NOT published yet. Will publish."
+            echo "$PKG_NAME@$PKG_VERSION not yet published. Will publish."
           fi
 
-      - name: Build (sdk/typescript)
+      - name: Build
         working-directory: ./sdk/typescript
         run: pnpm build
 
-      - name: Publish sdk/typescript
-        if: steps.ts_check.outputs.published == 'false'
+      - name: Publish
+        if: steps.check.outputs.published == 'false'
         working-directory: ./sdk/typescript
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
         run: |
           pnpm publish --no-git-checks --access public
-          echo "Published ${{ steps.ts_pkg.outputs.name }}@${{ steps.ts_pkg.outputs.version }}"
+          echo "Published ${{ steps.pkg.outputs.name }}@${{ steps.pkg.outputs.version }}"
