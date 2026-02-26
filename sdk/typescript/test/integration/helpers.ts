@@ -1,5 +1,5 @@
 import { bcs } from '@mysten/sui/bcs';
-import { SuiClient } from '@mysten/sui/client';
+import type { SuiGrpcClient } from '@mysten/sui/grpc';
 import { Transaction } from '@mysten/sui/transactions';
 import { expect } from 'vitest';
 
@@ -31,7 +31,7 @@ import {
 const PublicKeyBCS = bcs.vector(bcs.u8());
 
 export interface DKGTestSetup {
-	suiClient: SuiClient;
+	suiClient: SuiGrpcClient;
 	ikaClient: IkaClient;
 	userShareEncryptionKeys: UserShareEncryptionKeys;
 	signerAddress: string;

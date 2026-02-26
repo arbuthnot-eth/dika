@@ -1,8 +1,8 @@
 {
-	"name": "@ika.xyz/build-scripts",
+	"name": "@dika.sui/build-scripts",
 	"private": true,
-	"author": "dWallet Labs, Ltd. <dev@dwalletlabs.com>",
-	"description": "Build scripts for @ika.xyz packages",
+	"author": "brando.sui (https://github.com/arbuthnot-eth)",
+	"description": "Build scripts for @dika.sui packages",
 	"version": "0.0.0",
 	"license": "BSD-3-Clause-Clear",
 	"engines": {

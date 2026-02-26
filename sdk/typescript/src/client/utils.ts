@@ -1,46 +1,53 @@
 // Copyright (c) dWallet Labs, Ltd.
 // SPDX-License-Identifier: BSD-3-Clause-Clear
 
-import type { DynamicFieldInfo, SuiClient, SuiObjectResponse } from '@mysten/sui/client';
+import type { SuiClientTypes } from '@mysten/sui/client';
 
 import { InvalidObjectError } from './errors.js';
 
 /**
- * Extract BCS (Binary Canonical Serialization) bytes from a Sui object response.
- * This function validates the response and extracts the serialized object data.
+ * Extract MoveObject BCS content bytes from a v2 Sui object response.
+ * In @mysten/sui v2, `content` (with `include: { content: true }`) returns the raw
+ * MoveObject struct bytes that BCS-generated parsers expect. This is distinct from
+ * `objectBcs` which returns the full Object envelope (type + owner + data + metadata).
  *
- * @param resp - The Sui object response from a blockchain query
- * @returns The BCS-encoded bytes of the object
- * @throws {InvalidObjectError} If the response doesn't contain valid BCS data
+ * @param obj - The object from a v2 getObject/getObjects response (with include: { content: true })
+ * @returns The BCS-encoded struct bytes of the MoveObject
+ * @throws {InvalidObjectError} If the object doesn't contain BCS content
  */
-export function objResToBcs(resp: SuiObjectResponse): string {
-	if (resp.data?.bcs?.dataType !== 'moveObject') {
-		throw new InvalidObjectError(
-			`Response bcs missing: ${JSON.stringify(resp.data?.type, null, 2)}`,
-		);
+export function objResToBcs(obj: { content?: Uint8Array; type?: string }): Uint8Array {
+	if (!obj.content) {
+		throw new InvalidObjectError(`Object BCS content missing: ${JSON.stringify(obj.type, null, 2)}`);
 	}
 
-	return resp.data.bcs.bcsBytes;
+	return obj.content;
 }
 
 export async function fetchAllDynamicFields(
-	suiClient: SuiClient,
+	suiClient: SuiClientTypes.TransportMethods,
 	parentId: string,
-): Promise<DynamicFieldInfo[]> {
-	const allFields: any[] = [];
+): Promise<
+	{ fieldId: string; type: string; name: { type: string; bcs: Uint8Array }; valueType: string }[]
+> {
+	const allFields: {
+		fieldId: string;
+		type: string;
+		name: { type: string; bcs: Uint8Array };
+		valueType: string;
+	}[] = [];
 	let cursor: string | null = null;
 
 	// eslint-disable-next-line no-constant-condition
 	while (true) {
-		const response = await suiClient.getDynamicFields({
+		const response = await suiClient.listDynamicFields({
 			parentId,
 			cursor,
 		});
-		allFields.push(...response.data);
-		if (response.nextCursor === cursor) {
+		allFields.push(...response.dynamicFields);
+		if (!response.hasNextPage) {
 			break;
 		}
-		cursor = response.nextCursor;
+		cursor = response.cursor;
 	}
 
 	return allFields;
