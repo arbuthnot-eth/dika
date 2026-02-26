@@ -39,7 +39,7 @@ if (wantsSystem && !hasSystemEnv) {
 const exclude = ['**/node_modules/**', '**/chaos-test/**', '**/multiple-network-keys/**'];
 
 if (!runIntegration) {
-	exclude.push('**/test/v2/**', '**/test/ika-client/**');
+	exclude.push('**/test/integration/**', '**/test/ika-client/**');
 }
 
 if (!runSystem) {
