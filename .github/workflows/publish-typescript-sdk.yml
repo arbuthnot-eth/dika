@@ -1,11 +1,10 @@
-name: Publish SDKs (ika-wasm + typescript via pnpm Trusted Publishing)
+name: Publish SDKs (ika-wasm + typescript)
 
 on:
   workflow_dispatch: {} # manual trigger
 
 permissions:
   contents: read
-  id-token: write # REQUIRED for pnpm/npm Trusted Publishing (OIDC)
 
 env:
   RUSTDOCFLAGS: -Dwarnings
@@ -99,12 +98,13 @@ jobs:
         run: pnpm build
         # this should run wasm-pack internally
 
-      - name: Publish sdk/ika-wasm via pnpm (Trusted Publishing)
+      - name: Publish sdk/ika-wasm
         if: steps.ika_check.outputs.published == 'false'
         working-directory: ./sdk/ika-wasm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          # First publish of a public package usually needs --access public
-          pnpm publish --provenance --access public
+          pnpm publish --no-git-checks --access public
           echo "Published ${{ steps.ika_pkg.outputs.name }}@${{ steps.ika_pkg.outputs.version }}"
 
       # ---------- sdk/typescript ----------
@@ -139,9 +139,11 @@ jobs:
         working-directory: ./sdk/typescript
         run: pnpm build
 
-      - name: Publish sdk/typescript via pnpm (Trusted Publishing)
+      - name: Publish sdk/typescript
         if: steps.ts_check.outputs.published == 'false'
         working-directory: ./sdk/typescript
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          pnpm publish --provenance --access public
+          pnpm publish --no-git-checks --access public
           echo "Published ${{ steps.ts_pkg.outputs.name }}@${{ steps.ts_pkg.outputs.version }}"
