@@ -1,6 +1,6 @@
 {
-	"name": "@ika.xyz/ika-wasm",
-	"description": "Ika wasm sdk",
+	"name": "@dika.sui/ika-wasm",
+	"description": "Dika wasm sdk",
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/dwallet-labs/ika",
@@ -15,7 +15,7 @@
 		"prepare": "npm run build"
 	},
 	"author": "dWallet Labs, Ltd. <dev@dwalletlabs.com>",
-	"version": "0.2.1",
+	"version": "0.1.0",
 	"license": "BSD-3-Clause-Clear",
 	"types": "./dist/web/dwallet_mpc_wasm.d.ts",
 	"exports": {
